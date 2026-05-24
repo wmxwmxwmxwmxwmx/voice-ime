@@ -1,0 +1,9 @@
+[submodule "third_party/whisper.cpp"]
+	path = third_party/whisper.cpp
+	url = https://github.com/ggerganov/whisper.cpp.git
+[submodule "third_party/websocketpp"]
+	path = third_party/websocketpp
+	url = https://github.com/zaphoyd/websocketpp.git
+[submodule "third_party/asio"]
+	path = third_party/asio
+	url = https://github.com/chriskohlhoff/asio.git
