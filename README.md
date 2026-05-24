@@ -13,7 +13,7 @@
 - **CMake** 3.16+
 - **C++17** 编译器（Windows 使用 Visual Studio 2022，Linux 使用 GCC/Clang）
 - **Git**（含子模块）
-- **Python 3**（可选，用于启动前端静态页面）
+- **Python 3**（编译时需用于构建 OpenCC 字典；也可用于启动前端静态页面）
 
 ## 快速开始
 
@@ -47,6 +47,8 @@ chmod +x scripts/download_model.sh
 模型保存至 `models/ggml-base.bin`。开发调试可使用 `tiny` 以加快速度。
 
 ### 3. 编译服务端
+
+首次编译会通过 CMake 拉取 [OpenCC](https://github.com/BYVoid/OpenCC) 并构建繁简字典（需本机已安装 Python 3）。构建完成后，`t2s.json` 与字典文件会自动复制到 `voice_server` 同目录下的 `opencc/` 文件夹。
 
 **Windows（VS 2022）：**
 
@@ -94,7 +96,7 @@ python -m http.server 8080 -d frontend
 | 方向 | 格式 | 内容 |
 |------|------|------|
 | 客户端 → 服务端 | 二进制 | PCM int16 小端，单声道，16 kHz（每帧约 200 ms） |
-| 客户端 → 服务端 | JSON | `{"cmd":"start","language":"zh"}`、`{"cmd":"stop"}`、`{"cmd":"ping"}` |
+| 客户端 → 服务端 | JSON | `{"cmd":"start","language":"zh"}`、`{"cmd":"stop"}`、`{"cmd":"ping"}`（`language` 支持 `auto`、`zh`、`en`） |
 | 服务端 → 客户端 | JSON | `{"type":"partial","text":"..."}`、`{"type":"final","text":"..."}`、`{"type":"error","message":"..."}` |
 
 ## 项目结构
@@ -108,6 +110,13 @@ voice-ime/
 ├── models/            # 已下载的 GGML 权重（已 gitignore）
 └── CMakeLists.txt
 ```
+
+## 简体中文输出
+
+- 语言为 **中文**（`zh`）或 **自动**（`auto`）时，识别结果经 **OpenCC**（`t2s`）转为**简体中文**后再返回；**英语**（`en`）不转换。
+- 中文模式会使用 Whisper `initial_prompt` 引导普通话简体转写。
+- 若 `voice_server` 旁缺少 `opencc/t2s.json` 及 `.ocd2` 字典，服务仍可运行，但不会在日志外提示的情况下跳过繁简转换（stderr 会打印一次 `[opencc]` 警告）。
+- 识别准确率主要取决于 Whisper 模型大小；建议使用 `ggml-base.bin` 或更大，并在界面选择 **中文**。
 
 ## 性能说明
 

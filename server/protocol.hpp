@@ -50,4 +50,12 @@ inline std::string extract_cmd(const std::string& json) {
     return extract_string_field(json, "cmd");
 }
 
+// 仅允许 auto / zh / en；其它值（含 ja）回退为 auto
+inline std::string normalize_language(const std::string& lang) {
+    if (lang == "zh" || lang == "en" || lang == "auto") {
+        return lang;
+    }
+    return "auto";
+}
+
 }  // namespace protocol

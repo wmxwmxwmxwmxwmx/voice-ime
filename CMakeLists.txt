@@ -12,11 +12,24 @@ else()
 endif()
 
 find_package(Threads REQUIRED)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+# OpenCC（繁体→简体）
+include(FetchContent)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(ENABLE_GTEST OFF CACHE BOOL "" FORCE)
+set(ENABLE_BENCHMARK OFF CACHE BOOL "" FORCE)
+set(BUILD_DOCUMENTATION OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    opencc
+    GIT_REPOSITORY https://github.com/BYVoid/OpenCC.git
+    GIT_TAG ver.1.1.7
+)
+FetchContent_MakeAvailable(opencc)
 
 # whisper.cpp
 set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/whisper.cpp EXCLUDE_FROM_ALL)
 
 # voice_server
@@ -25,6 +38,7 @@ add_executable(voice_server
     server/thread_pool.cpp
     server/session.cpp
     server/asr_worker.cpp
+    server/text_convert.cpp
     server/websocket_server.cpp
 )
 
@@ -34,9 +48,12 @@ target_include_directories(voice_server PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/asio/asio/include
     ${CMAKE_SOURCE_DIR}/third_party/whisper.cpp/include
     ${CMAKE_SOURCE_DIR}/third_party/whisper.cpp/ggml/include
+    ${opencc_SOURCE_DIR}/src
+    ${opencc_BINARY_DIR}/src
 )
 
 target_compile_definitions(voice_server PRIVATE
+    Opencc_BUILT_AS_STATIC
     ASIO_STANDALONE
     _WIN32_WINNT=0x0601
     WIN32_LEAN_AND_MEAN
@@ -48,10 +65,36 @@ target_compile_definitions(voice_server PRIVATE
     _WEBSOCKETPP_CPP11_TYPE_TRAITS_
 )
 
-target_link_libraries(voice_server PRIVATE whisper Threads::Threads)
+target_link_libraries(voice_server PRIVATE whisper libopencc Threads::Threads)
 
 if(MSVC)
     target_link_libraries(voice_server PRIVATE ws2_32)
 endif()
 
+# 将 t2s 配置与字典复制到可执行文件旁（opencc/t2s.json 与同目录 .ocd2）
+set(VOICE_OPENCC_DATA_DIR "${opencc_BINARY_DIR}/data")
+add_custom_command(
+    TARGET voice_server
+    POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:voice_server>/opencc"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${opencc_SOURCE_DIR}/data/config/t2s.json"
+        "$<TARGET_FILE_DIR:voice_server>/opencc/t2s.json"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${VOICE_OPENCC_DATA_DIR}/TSPhrases.ocd2"
+        "$<TARGET_FILE_DIR:voice_server>/opencc/TSPhrases.ocd2"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${VOICE_OPENCC_DATA_DIR}/TSCharacters.ocd2"
+        "$<TARGET_FILE_DIR:voice_server>/opencc/TSCharacters.ocd2"
+    COMMENT "Copy OpenCC t2s data next to voice_server"
+)
+add_dependencies(voice_server Dictionaries)
+
 install(TARGETS voice_server RUNTIME DESTINATION bin)
+install(
+    FILES
+        "${opencc_SOURCE_DIR}/data/config/t2s.json"
+        "${VOICE_OPENCC_DATA_DIR}/TSPhrases.ocd2"
+        "${VOICE_OPENCC_DATA_DIR}/TSCharacters.ocd2"
+    DESTINATION bin/opencc
+)

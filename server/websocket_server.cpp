@@ -87,7 +87,7 @@ void VoiceWebSocketServer::handle_control(ConnectionHdl hdl, const std::string& 
         session.last_infer_time = session.recording_start;
         const std::string lang = protocol::extract_string_field(payload, "language");
         if (!lang.empty()) {
-            session.language = lang;
+            session.language = protocol::normalize_language(lang);
         }
         std::cout << "[ws] 开始录音（语言=" << session.language << "）\n";
         return;
@@ -166,17 +166,21 @@ void VoiceWebSocketServer::schedule_infer(ConnectionHdl hdl, bool final_pass) {
                 return;
             }
 
-            const std::string text = asr_.transcribe(pcm_copy, language);
+            const TranscribeResult tr = asr_.transcribe(pcm_copy, language);
+            if (!tr.ok) {
+                send_text(hdl_copy, protocol::make_error(tr.error));
+                return;
+            }
 
             {
                 std::lock_guard<std::mutex> lock(session_ptr->mutex);
-                session_ptr->last_partial = text;
+                session_ptr->last_partial = tr.text;
             }
 
             if (final_pass) {
-                send_text(hdl_copy, protocol::make_final(text));
+                send_text(hdl_copy, protocol::make_final(tr.text));
             } else {
-                send_text(hdl_copy, protocol::make_partial(text));
+                send_text(hdl_copy, protocol::make_partial(tr.text));
             }
         })) {
         send_text(hdl, protocol::make_error("服务器繁忙，请稍后重试"));
@@ -195,6 +199,16 @@ void VoiceWebSocketServer::send_text(ConnectionHdl hdl, const std::string& json)
     } catch (const std::exception& e) {
         std::cerr << "[ws] 投递失败：" << e.what() << "\n";
     }
+}
+
+bool VoiceWebSocketServer::validate_model() {
+    if (asr_.model_available()) {
+        return true;
+    }
+    std::cerr << "错误：无法加载模型 " << model_path_ << "\n";
+    std::cerr << "请确认文件存在。若仅有 ggml-tiny.bin，请使用：\n";
+    std::cerr << "  --model models/ggml-tiny.bin\n";
+    return false;
 }
 
 void VoiceWebSocketServer::run() {

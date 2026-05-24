@@ -23,6 +23,7 @@ public:
                          int step_ms);
     ~VoiceWebSocketServer();
 
+    bool validate_model();
     void run();
     void stop();
 

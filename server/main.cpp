@@ -1,6 +1,7 @@
 #include "websocket_server.hpp"
 
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <string>
 
@@ -75,8 +76,19 @@ int main(int argc, char** argv) {
     SetConsoleOutputCP(CP_UTF8);
 #endif
 
+    if (!std::filesystem::exists(opts.model)) {
+        std::cerr << "错误：找不到模型文件：" << opts.model << "\n";
+        std::cerr << "请先运行 .\\scripts\\download_model.ps1 -Model tiny\n";
+        std::cerr << "或 .\\scripts\\download_model.ps1 -Model base\n";
+        std::cerr << "若已下载 tiny，请使用：--model models/ggml-tiny.bin\n";
+        return 1;
+    }
+
     try {
         VoiceWebSocketServer server(opts.model, opts.port, opts.threads, opts.step_ms);
+        if (!server.validate_model()) {
+            return 1;
+        }
         server.run();
     } catch (const std::exception& e) {
         std::cerr << "致命错误：" << e.what() << "\n";
