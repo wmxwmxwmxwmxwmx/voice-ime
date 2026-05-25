@@ -14,10 +14,14 @@ namespace {
 void print_usage() {
     std::cerr
         << "用法：voice_server --model <模型路径.ggml> [选项]\n"
-        << "  --model <路径>   whisper GGML 模型路径（必填）\n"
-        << "  --port <端口>    WebSocket 端口（默认：9000）\n"
-        << "  --threads <数量> ASR 工作线程数（默认：4）\n"
-        << "  --step <毫秒>    两次中间识别的最小间隔（默认：400）\n";
+        << "  --model <路径>           whisper GGML 模型路径（必填）\n"
+        << "  --port <端口>            WebSocket 端口（默认：9000）\n"
+        << "  --threads <数量>         ASR 工作线程数（默认：4）\n"
+        << "  --step <毫秒>            两次中间识别的最小间隔（默认：400）\n"
+        << "  --min-speech-ms <毫秒>   尾部至少多长才触发 partial（默认：500）\n"
+        << "  --vad-energy <阈值>      能量 VAD RMS 阈值（默认：0.015）\n"
+        << "  --silence-commit-ms <毫秒> 停顿多久锁定已确认段落（默认：800）\n"
+        << "  --no-speech-thold <值>   Whisper 非语音阈值（默认：0.6）\n";
 }
 
 struct Options {
@@ -25,6 +29,10 @@ struct Options {
     uint16_t port = 9000;
     std::size_t threads = 4;
     int step_ms = 400;
+    int min_speech_ms = 500;
+    float vad_energy = 0.015f;
+    int silence_commit_ms = 800;
+    float no_speech_thold = 0.6f;
 };
 
 bool parse_args(int argc, char** argv, Options& opts) {
@@ -52,6 +60,22 @@ bool parse_args(int argc, char** argv, Options& opts) {
             const auto v = need_value("--step");
             if (v.empty()) return false;
             opts.step_ms = std::stoi(v);
+        } else if (arg == "--min-speech-ms") {
+            const auto v = need_value("--min-speech-ms");
+            if (v.empty()) return false;
+            opts.min_speech_ms = std::stoi(v);
+        } else if (arg == "--vad-energy") {
+            const auto v = need_value("--vad-energy");
+            if (v.empty()) return false;
+            opts.vad_energy = std::stof(v);
+        } else if (arg == "--silence-commit-ms") {
+            const auto v = need_value("--silence-commit-ms");
+            if (v.empty()) return false;
+            opts.silence_commit_ms = std::stoi(v);
+        } else if (arg == "--no-speech-thold") {
+            const auto v = need_value("--no-speech-thold");
+            if (v.empty()) return false;
+            opts.no_speech_thold = std::stof(v);
         } else if (arg == "--help" || arg == "-h") {
             print_usage();
             std::exit(0);
@@ -85,7 +109,9 @@ int main(int argc, char** argv) {
     }
 
     try {
-        VoiceWebSocketServer server(opts.model, opts.port, opts.threads, opts.step_ms);
+        VoiceWebSocketServer server(opts.model, opts.port, opts.threads, opts.step_ms,
+                                    opts.min_speech_ms, opts.vad_energy,
+                                    opts.silence_commit_ms, opts.no_speech_thold);
         if (!server.validate_model()) {
             return 1;
         }

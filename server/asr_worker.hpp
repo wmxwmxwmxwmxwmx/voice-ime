@@ -11,7 +11,7 @@ struct TranscribeResult {
 
 class AsrEngine {
 public:
-    explicit AsrEngine(std::string model_path);
+    explicit AsrEngine(std::string model_path, float no_speech_thold = 0.6f);
 
     bool model_available() const;
     TranscribeResult transcribe(const std::vector<float>& pcm,
@@ -20,4 +20,5 @@ public:
 
 private:
     std::string model_path_;
+    float no_speech_thold_ = 0.6f;
 };

@@ -7,6 +7,7 @@
 #include <cctype>
 #include <memory>
 #include <sstream>
+#include <string>
 
 namespace {
 
@@ -47,11 +48,29 @@ std::string collect_segments(whisper_context* ctx) {
     return oss.str();
 }
 
-constexpr const char* kZhInitialPrompt = "以下是普通话简体中文转写。";
+constexpr const char* kZhInitialPrompt = "以下是普通话简体中文。";
+
+// 去掉 ASCII 括号片段，如 (音)、(转写)
+std::string strip_bracket_hallucinations(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '(') {
+            const std::size_t end = text.find(')', i + 1);
+            if (end != std::string::npos) {
+                i = end;
+                continue;
+            }
+        }
+        out += text[i];
+    }
+    return out;
+}
 
 }  // namespace
 
-AsrEngine::AsrEngine(std::string model_path) : model_path_(std::move(model_path)) {}
+AsrEngine::AsrEngine(std::string model_path, float no_speech_thold)
+    : model_path_(std::move(model_path)), no_speech_thold_(no_speech_thold) {}
 
 bool AsrEngine::model_available() const {
     std::string err;
@@ -76,7 +95,7 @@ std::string AsrEngine::postprocess(const std::string& text) {
     while (!out.empty() && out.back() == ' ') {
         out.pop_back();
     }
-    return out;
+    return strip_bracket_hallucinations(out);
 }
 
 TranscribeResult AsrEngine::transcribe(const std::vector<float>& pcm,
@@ -102,6 +121,9 @@ TranscribeResult AsrEngine::transcribe(const std::vector<float>& pcm,
     wparams.no_timestamps    = true;
     wparams.single_segment   = false;
     wparams.n_threads        = 1;
+    wparams.suppress_blank   = true;
+    wparams.suppress_nst     = true;
+    wparams.no_speech_thold  = no_speech_thold_;
 
     if (language != "auto" && !language.empty()) {
         wparams.language = language.c_str();

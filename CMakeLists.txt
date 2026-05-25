@@ -1,4 +1,14 @@
 cmake_minimum_required(VERSION 3.16)
+
+# 抑制 OpenCC / whisper.cpp 等依赖在配置阶段的 CMake 策略与弃用 API 警告
+if(POLICY CMP0177)
+    cmake_policy(SET CMP0177 NEW)
+endif()
+set(CMAKE_WARN_DEPRECATED OFF CACHE BOOL "" FORCE)
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.25")
+    set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS ON CACHE BOOL "" FORCE)
+endif()
+
 project(voice-ime VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -28,6 +38,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(opencc)
 
 # whisper.cpp
+set(GGML_CCACHE OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/whisper.cpp EXCLUDE_FROM_ALL)
@@ -37,6 +48,7 @@ add_executable(voice_server
     server/main.cpp
     server/thread_pool.cpp
     server/session.cpp
+    server/audio_vad.cpp
     server/asr_worker.cpp
     server/text_convert.cpp
     server/websocket_server.cpp

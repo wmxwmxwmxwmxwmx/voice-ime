@@ -3,6 +3,7 @@
 #include "protocol.hpp"
 
 #include <iostream>
+#include <utility>
 
 namespace {
 
@@ -10,15 +11,30 @@ ConnectionHdl copy_hdl(ConnectionHdl hdl) {
     return hdl;
 }
 
+struct InferPendingGuard {
+    std::shared_ptr<Session> session;
+    ~InferPendingGuard() {
+        if (session) {
+            session->infer_pending = false;
+        }
+    }
+};
+
 }  // namespace
 
 VoiceWebSocketServer::VoiceWebSocketServer(std::string model_path, uint16_t port,
-                                           std::size_t threads, int step_ms)
+                                           std::size_t threads, int step_ms,
+                                           int min_speech_ms, float vad_energy,
+                                           int silence_commit_ms, float no_speech_thold)
     : model_path_(std::move(model_path)),
       port_(port),
       step_ms_(step_ms),
+      min_speech_ms_(min_speech_ms),
+      vad_energy_(vad_energy),
+      silence_commit_ms_(silence_commit_ms),
+      no_speech_thold_(no_speech_thold),
       pool_(threads > 0 ? threads : 1),
-      asr_(model_path_) {
+      asr_(model_path_, no_speech_thold_) {
     server_.init_asio();
     server_.set_reuse_addr(true);
 
@@ -50,7 +66,7 @@ void VoiceWebSocketServer::on_open(ConnectionHdl hdl) {
 }
 
 void VoiceWebSocketServer::on_close(ConnectionHdl hdl) {
-    schedule_infer(hdl, true);
+    schedule_infer(hdl, true, false);
     std::lock_guard<std::mutex> lock(sessions_mutex_);
     sessions_.erase(hdl);
     std::cout << "[ws] 客户端已断开\n";
@@ -68,7 +84,6 @@ void VoiceWebSocketServer::on_message(ConnectionHdl hdl, MessagePtr msg) {
         handle_control(hdl, payload);
     }
 }
-
 
 void VoiceWebSocketServer::handle_control(ConnectionHdl hdl, const std::string& payload) {
     const std::string cmd = protocol::extract_cmd(payload);
@@ -98,7 +113,7 @@ void VoiceWebSocketServer::handle_control(ConnectionHdl hdl, const std::string& 
             std::lock_guard<std::mutex> lock(session.mutex);
             session.recording = false;
         }
-        schedule_infer(hdl, true);
+        schedule_infer(hdl, true, false);
         std::cout << "[ws] 停止录音\n";
         return;
     }
@@ -114,6 +129,7 @@ void VoiceWebSocketServer::handle_binary(ConnectionHdl hdl, const std::string& p
 
     auto& session = session_for(hdl);
     bool should_run = false;
+    bool pause_commit = false;
 
     {
         std::lock_guard<std::mutex> lock(session.mutex);
@@ -122,16 +138,23 @@ void VoiceWebSocketServer::handle_binary(ConnectionHdl hdl, const std::string& p
         }
         const auto* samples = reinterpret_cast<const int16_t*>(payload.data());
         const std::size_t count = payload.size() / sizeof(int16_t);
-        session.append_pcm_int16(samples, count);
-        should_run = session.should_infer(step_ms_);
+        session.append_pcm_int16(samples, count, vad_energy_, kChunkMs);
+
+        if (session.should_commit_on_pause(silence_commit_ms_)) {
+            pause_commit = true;
+            should_run = true;
+        } else if (session.should_schedule_infer(step_ms_, min_speech_ms_)) {
+            should_run = true;
+        }
     }
 
     if (should_run) {
-        schedule_infer(hdl, false);
+        schedule_infer(hdl, false, pause_commit);
     }
 }
 
-void VoiceWebSocketServer::schedule_infer(ConnectionHdl hdl, bool final_pass) {
+void VoiceWebSocketServer::schedule_infer(ConnectionHdl hdl, bool final_pass,
+                                          bool pause_commit) {
     ConnectionHdl hdl_copy = copy_hdl(hdl);
 
     std::shared_ptr<Session> session_ptr;
@@ -144,24 +167,44 @@ void VoiceWebSocketServer::schedule_infer(ConnectionHdl hdl, bool final_pass) {
         session_ptr = it->second;
     }
 
-    if (!pool_.enqueue([this, hdl_copy, session_ptr, final_pass]() {
+    {
+        std::lock_guard<std::mutex> lock(session_ptr->mutex);
+        if (!final_pass && !pause_commit) {
+            if (session_ptr->infer_pending.load()) {
+                return;
+            }
+        }
+        session_ptr->infer_pending = true;
+    }
+
+    if (!pool_.enqueue([this, hdl_copy, session_ptr, final_pass, pause_commit]() {
+            InferPendingGuard guard{session_ptr};
+
             std::vector<float> pcm_copy;
             std::string language;
+            bool do_commit = pause_commit || final_pass;
+
             {
                 std::lock_guard<std::mutex> lock(session_ptr->mutex);
-                if (!final_pass && !session_ptr->should_infer(step_ms_)) {
+                if (!final_pass && !pause_commit &&
+                    !session_ptr->should_schedule_infer(step_ms_, min_speech_ms_)) {
                     return;
                 }
-                pcm_copy = session_ptr->pcm;
+                pcm_copy = session_ptr->pcm_for_infer();
                 language = session_ptr->language;
-                if (!final_pass) {
+                if (!final_pass && !pause_commit) {
                     session_ptr->mark_inferred();
                 }
             }
 
             if (pcm_copy.empty()) {
                 if (final_pass) {
-                    send_text(hdl_copy, protocol::make_final(""));
+                    std::string out;
+                    {
+                        std::lock_guard<std::mutex> lock(session_ptr->mutex);
+                        out = session_ptr->display_text("");
+                    }
+                    send_text(hdl_copy, protocol::make_final(out));
                 }
                 return;
             }
@@ -172,17 +215,25 @@ void VoiceWebSocketServer::schedule_infer(ConnectionHdl hdl, bool final_pass) {
                 return;
             }
 
+            std::string outbound;
             {
                 std::lock_guard<std::mutex> lock(session_ptr->mutex);
+                outbound = session_ptr->display_text(tr.text);
                 session_ptr->last_partial = tr.text;
+                session_ptr->last_partial_text = tr.text;
+                if (do_commit) {
+                    session_ptr->commit_segment(tr.text);
+                    outbound = session_ptr->display_text("");
+                }
             }
 
             if (final_pass) {
-                send_text(hdl_copy, protocol::make_final(tr.text));
+                send_text(hdl_copy, protocol::make_final(outbound));
             } else {
-                send_text(hdl_copy, protocol::make_partial(tr.text));
+                send_text(hdl_copy, protocol::make_partial(outbound));
             }
         })) {
+        session_ptr->infer_pending = false;
         send_text(hdl, protocol::make_error("服务器繁忙，请稍后重试"));
     }
 }
@@ -215,6 +266,8 @@ void VoiceWebSocketServer::run() {
     server_.listen(port_);
     server_.start_accept();
     std::cout << "Voice-IME 服务监听 ws://0.0.0.0:" << port_ << "\n";
-    std::cout << "模型：" << model_path_ << " | 推理间隔：" << step_ms_ << " ms\n";
+    std::cout << "模型：" << model_path_ << " | 推理间隔：" << step_ms_ << " ms"
+              << " | VAD 能量阈值：" << vad_energy_
+              << " | 停顿提交：" << silence_commit_ms_ << " ms\n";
     server_.run();
 }

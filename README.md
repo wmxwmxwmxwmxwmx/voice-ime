@@ -68,10 +68,16 @@ cmake --build build -j
 
 可执行文件：`build/voice_server`
 
+配置时若出现来自 OpenCC、whisper.cpp 的 CMake 策略或弃用提示，一般可忽略（不影响编译）；根目录 [CMakeLists.txt](CMakeLists.txt) 已尽量抑制。仍想安静输出时可加：
+
+```powershell
+cmake -B build -DCMAKE_BUILD_TYPE=Release -Wno-dev
+```
+
 ### 4. 启动服务端
 
 ```bash
-./build/voice_server --model models/ggml-base.bin --port 9000 --threads 4 --step 400
+./build/Release/voice_server --model models/ggml-base.bin --port 9000 --threads 4 --step 400
 ```
 
 | 参数 | 说明 |
@@ -79,7 +85,11 @@ cmake --build build -j
 | `--model` | GGML whisper 模型路径（必填） |
 | `--port` | WebSocket 端口（默认 9000） |
 | `--threads` | ASR 工作线程数（默认 4） |
-| `--step` | 两次中间识别之间的最小间隔，单位毫秒（默认 400） |
+| `--step` | 两次中间识别的最小间隔，毫秒（默认 400） |
+| `--min-speech-ms` | 未提交尾部至少多长才触发 partial，毫秒（默认 500） |
+| `--vad-energy` | 能量 VAD 的 RMS 阈值（默认 0.015） |
+| `--silence-commit-ms` | 静音多久将当前段落锁定为已确认，毫秒（默认 800） |
+| `--no-speech-thold` | Whisper 非语音阈值（默认 0.6） |
 
 ### 5. 启动并打开前端
 
@@ -114,9 +124,16 @@ voice-ime/
 ## 简体中文输出
 
 - 语言为 **中文**（`zh`）或 **自动**（`auto`）时，识别结果经 **OpenCC**（`t2s`）转为**简体中文**后再返回；**英语**（`en`）不转换。
-- 中文模式会使用 Whisper `initial_prompt` 引导普通话简体转写。
+- 中文模式会使用 Whisper `initial_prompt` 引导普通话简体输出。
 - 若 `voice_server` 旁缺少 `opencc/t2s.json` 及 `.ocd2` 字典，服务仍可运行，但不会在日志外提示的情况下跳过繁简转换（stderr 会打印一次 `[opencc]` 警告）。
 - 识别准确率主要取决于 Whisper 模型大小；建议使用 `ggml-base.bin` 或更大，并在界面选择 **中文**。
+
+## VAD 与增量识别
+
+- **能量 VAD**：低于 `--vad-energy` 的 PCM 块不写入缓冲，减少静音送入 Whisper 导致的幻觉（如 `(音)`）。
+- **增量识别**：仅对「未锁定尾部」音频推理；`partial` / `final` 下发 **已确认文本 + 当前尾部**，停顿约 `--silence-commit-ms`（默认 800ms）后锁定上一段，继续说只在后面增长。
+- **Whisper**：启用 `no_speech_thold`、`suppress_nst`；括号片段（如 `(转写)`）会在后处理中剔除。
+- 推荐：`ggml-base.bin` 或更大、界面选 **中文**；麦克风较弱时可略降低 `--vad-energy`（如 `0.01`）。
 
 ## 性能说明
 
@@ -126,7 +143,7 @@ voice-ime/
 
 ## 后续规划（MVP 之后）
 
-- WebRTC VAD、RNNoise、热词
+- Whisper 内置 VAD 模型、RNNoise、热词
 - Docker 部署
 - TLS（WSS）
 - AudioWorklet（替代 ScriptProcessorNode）
