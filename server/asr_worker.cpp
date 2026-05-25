@@ -118,7 +118,8 @@ std::string AsrEngine::postprocess(const std::string& text) {
     while (!out.empty() && out.back() == ' ') {
         out.pop_back();
     }
-    return sanitize_transcript(out);
+    return clean_transcript_text(
+        collapse_adjacent_repeats(sanitize_transcript(out)));
 }
 
 std::string AsrEngine::sanitize_transcript(const std::string& text) {
@@ -128,7 +129,8 @@ std::string AsrEngine::sanitize_transcript(const std::string& text) {
 TranscribeResult AsrEngine::transcribe(const std::vector<float>& pcm,
                                        const std::string& language,
                                        const std::string* context_prompt,
-                                       bool short_audio) const {
+                                       bool short_audio,
+                                       bool for_final) const {
     TranscribeResult result;
     if (pcm.empty()) {
         result.ok = true;
@@ -142,20 +144,32 @@ TranscribeResult AsrEngine::transcribe(const std::vector<float>& pcm,
         return result;
     }
 
-    whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+    whisper_full_params wparams =
+        for_final ? whisper_full_default_params(WHISPER_SAMPLING_BEAM_SEARCH)
+                  : whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
     wparams.print_realtime   = false;
     wparams.print_progress   = false;
     wparams.print_timestamps = false;
     wparams.print_special    = false;
     wparams.no_timestamps    = true;
-    wparams.single_segment   = false;
+    wparams.single_segment   = for_final ? false : true;
     wparams.n_threads        = 1;
     wparams.suppress_blank   = true;
     wparams.suppress_nst     = true;
     wparams.no_speech_thold  = no_speech_thold_;
-    if (short_audio) {
+    wparams.temperature      = 0.0f;
+    wparams.entropy_thold    = 2.4f;
+    wparams.logprob_thold    = -1.0f;
+    if (for_final) {
+        wparams.beam_search.beam_size = 5;
+        if (pcm.size() <
+            static_cast<std::size_t>(16000) * 6) {
+            wparams.single_segment = true;
+        }
+    } else if (short_audio) {
         wparams.single_segment = true;
     }
+    wparams.greedy.best_of = 1;
 
     std::string context_storage;
     const char* prompt_ptr = nullptr;
@@ -189,8 +203,12 @@ TranscribeResult AsrEngine::transcribe(const std::vector<float>& pcm,
 
     result.ok = true;
     std::string text = postprocess(collect_segments(ctx));
-    if (language == "zh" || language == "auto") {
+    if (language == "zh") {
+        const std::string before_opencc = text;
         text = to_simplified_chinese(text);
+        if (!is_acceptable_transcript(text)) {
+            text = is_acceptable_transcript(before_opencc) ? before_opencc : std::string{};
+        }
     }
     result.text = std::move(text);
     return result;

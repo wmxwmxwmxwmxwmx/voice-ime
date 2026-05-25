@@ -88,12 +88,14 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -Wno-dev
 | `--step` | 两次中间识别的最小间隔，毫秒（默认 400） |
 | `--min-speech-ms` | 未提交尾部至少多长才触发 partial，毫秒（默认 500） |
 | `--vad-energy` | 能量 VAD 的 RMS 阈值（默认 0.015） |
-| `--silence-commit-ms` | 静音多久将当前段落锁定为已确认，毫秒（默认 500） |
-| `--partial-max-sec` | partial 推理的最大尾部音频窗口，秒（默认 4） |
-| `--no-speech-thold` | Whisper 非语音阈值（默认 0.6） |
+| `--silence-commit-ms` | 静音多久将当前段落锁定为已确认，毫秒（默认 400） |
+| `--partial-max-sec` | partial 推理的最大尾部音频窗口，秒（默认 3） |
+| `--max-utterance-sec` | 连续说话多久自动 commit（默认与 partial-max-sec 相同） |
+| `--no-speech-thold` | Whisper 非语音阈值（默认 0.65） |
 | `--zh-prompt` | 无已确认上下文时使用固定中文 `initial_prompt` |
 | `--no-context-prompt` | 禁用已确认文本作为 `initial_prompt` |
 | `--no-repeat-filter` | 关闭 partial 重复幻觉过滤 |
+| `--garbled-ratio-thold` | 乱码码点占比上限，超过则拒发 partial（默认 0.15） |
 
 ### 5. 启动并打开前端
 
@@ -147,18 +149,23 @@ voice-ime/
 - 语言为 **中文**（`zh`）或 **自动**（`auto`）时，识别结果经 **OpenCC**（`t2s`）转为**简体中文**后再返回；**英语**（`en`）不转换。
 - 默认**不再**向 Whisper 注入长句 `initial_prompt`（语言由 `language=zh` 固定，简体由 OpenCC 保证），减少「以下是普通话简体中文」等幻觉残片；后处理会剔除相关子串。若需旧行为可启动服务时加 `--zh-prompt`。
 - 若 `voice_server` 旁缺少 `opencc/t2s.json` 及 `.ocd2` 字典，服务仍可运行，但不会在日志外提示的情况下跳过繁简转换（stderr 会打印一次 `[opencc]` 警告）。
-- 识别准确率主要取决于 Whisper 模型大小；建议使用 `ggml-base.bin` 或更大，并在界面选择 **中文**。
+- 识别准确率主要取决于 Whisper 模型大小；**中文推荐 `ggml-small.bin` 或更大**（`base` 在流式场景易重复幻觉），并在界面选择 **中文**。
+- 若出现 `󦱉󩦙` 类乱码：多为 Whisper 幻觉 + 脏文本进入上下文；服务端会过滤 PUA/非法 UTF-8，且不再用乱码作 `initial_prompt`。**`auto` 模式不再走 OpenCC**，仅 `zh` 转简体。
 
 ## VAD 与增量识别
 
 - **能量 VAD**：低于 `--vad-energy` 的 PCM 块不写入缓冲，减少静音送入 Whisper 导致的幻觉（如 `(音)`）。
-- **partial 尾部窗口**：仅对最近 `--partial-max-sec`（默认 4s）且自上次 commit 起的音频做中间识别，避免长尾部重复幻觉。
-- **增量显示**：`partial` 下发 **已确认文本 + 当前句尾部**；停顿约 `--silence-commit-ms`（默认 500ms）后 commit 锁定上一段。
-- **stop 整段 final**：停止录音时对**整段缓冲**重识别一次，`final` 全文替换（与中途 partial 可不同，通常更通顺）。
-- **上下文 prompt**：默认将已确认文本尾部（约 120 字）作为 `initial_prompt` 提高连贯性；经 `sanitize_transcript` 防泄漏。可用 `--no-context-prompt` 关闭。
-- **重复过滤**：partial 若检测到连续重复 n-gram（≥4 字 ×3 次）则丢弃该次结果；`--no-repeat-filter` 可关闭。
-- **Whisper**：`no_speech_thold`、`suppress_nst`；partial 短窗口启用 `single_segment`。
-- 推荐：`ggml-small.bin` 或更大、界面选 **中文**；可试 `--partial-max-sec 3 --step 500`；麦克风较弱时可略降低 `--vad-energy`（如 `0.01`）。
+- **partial 尾部窗口**：仅对最近 `--partial-max-sec`（默认 3s）且自上次 commit 起的音频做中间识别。
+- **自动分段 commit**：连续说话超过 `--max-utterance-sec`（默认与 partial 窗口相同）也会锁定上一段，避免无停顿时长句叠加。
+- **增量显示**：`partial` 为 **已确认 + 稳定化后的当前句**；相邻重复短语会自动折叠；异常增长 partial 会被丢弃。
+- **停顿 commit**：静音约 `--silence-commit-ms`（默认 400ms）后锁定上一段。
+- **stop 整段 final**：停止后仅下发一条 `final`（beam search 整段重识别，全文替换）；停止后不再发送 partial。
+- **上下文 prompt**：优先用已确认文本；无确认时用上一句 **可读** partial 尾部作 `initial_prompt`（乱码不会写入上下文）。
+- **乱码过滤**：剔除 PUA/破碎 UTF-8；乱码占比超过 `--garbled-ratio-thold` 的 partial 不下发。
+- **重复过滤**：检测双倍/三倍重复及低多样性文本；`--no-repeat-filter` 可关闭。
+- **Whisper**：partial 用 greedy + `single_segment`；final 用 beam search（`beam_size=5`）。
+- 推荐：`.\scripts\download_model.ps1 -Model small`，启动示例：  
+  `voice_server --model models/ggml-small.bin --step 500 --partial-max-sec 3`
 
 ## 性能说明
 

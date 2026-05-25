@@ -22,8 +22,9 @@ public:
     VoiceWebSocketServer(std::string model_path, uint16_t port, std::size_t threads,
                          int step_ms, int min_speech_ms, float vad_energy,
                          int silence_commit_ms, float no_speech_thold,
-                         bool use_zh_prompt = false, int partial_max_sec = 4,
-                         bool use_context_prompt = true, bool repeat_filter = true);
+                         bool use_zh_prompt = false, int partial_max_sec = 3,
+                         bool use_context_prompt = true, bool repeat_filter = true,
+                         int max_utterance_sec = 0, float garbled_ratio_thold = 0.15f);
     ~VoiceWebSocketServer();
 
     bool validate_model();
@@ -51,8 +52,10 @@ private:
     int silence_commit_ms_;
     float no_speech_thold_;
     int partial_max_sec_;
+    int max_utterance_sec_;
     bool use_context_prompt_;
     bool repeat_filter_;
+    float garbled_ratio_thold_;
     static constexpr int kChunkMs = 200;
 
     WsServer server_;

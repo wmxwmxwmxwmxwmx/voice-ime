@@ -18,7 +18,8 @@ public:
     TranscribeResult transcribe(const std::vector<float>& pcm,
                                 const std::string& language,
                                 const std::string* context_prompt = nullptr,
-                                bool short_audio = false) const;
+                                bool short_audio = false,
+                                bool for_final = false) const;
     static std::string postprocess(const std::string& text);
     static std::string sanitize_transcript(const std::string& text);
 

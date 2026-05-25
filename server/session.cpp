@@ -1,6 +1,7 @@
 #include "session.hpp"
 
 #include "audio_vad.hpp"
+#include "text_quality.hpp"
 
 bool Session::append_pcm_int16(const int16_t* data, std::size_t count,
                                float energy_threshold, int chunk_ms) {
@@ -39,6 +40,7 @@ void Session::clear() {
     last_partial_text.clear();
     infer_pending = false;
     closed = false;
+    finalize_pending = false;
 }
 
 bool Session::should_schedule_infer(int step_ms, int min_speech_ms) const {
@@ -62,6 +64,19 @@ bool Session::should_schedule_infer(int step_ms, int min_speech_ms) const {
 
 void Session::mark_inferred() {
     last_infer_time = std::chrono::steady_clock::now();
+}
+
+bool Session::should_commit_on_duration(int max_utterance_ms) const {
+    if (!recording || !speech_seen || max_utterance_ms <= 0) {
+        return false;
+    }
+    const std::size_t tail_samples = pcm.size() > infer_pcm_offset
+                                         ? pcm.size() - infer_pcm_offset
+                                         : 0;
+    const std::size_t max_samples =
+        static_cast<std::size_t>(kSampleRate) * static_cast<std::size_t>(max_utterance_ms) /
+        1000;
+    return tail_samples >= max_samples;
 }
 
 bool Session::should_commit_on_pause(int silence_commit_ms) const {
@@ -106,4 +121,24 @@ std::string Session::display_text(const std::string& tail) const {
 
 bool Session::has_pending_tail() const {
     return pcm.size() > infer_pcm_offset;
+}
+
+std::string Session::stable_tail_for_display(const std::string& new_tail,
+                                             const std::string& last_tail,
+                                             double max_garbled_ratio) {
+    const std::string collapsed = collapse_adjacent_repeats(new_tail);
+    if (should_reject_partial(collapsed, last_tail, max_garbled_ratio)) {
+        return {};
+    }
+    if (last_tail.empty()) {
+        return collapsed;
+    }
+    if (collapsed.size() >= last_tail.size() &&
+        collapsed.compare(0, last_tail.size(), last_tail) == 0) {
+        return collapsed;
+    }
+    if (collapsed.find(last_tail + last_tail) != std::string::npos) {
+        return {};
+    }
+    return collapsed;
 }

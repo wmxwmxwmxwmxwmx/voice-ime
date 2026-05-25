@@ -21,6 +21,26 @@ struct InferPendingGuard {
     }
 };
 
+std::string build_context_prompt(const Session& session, bool use_context,
+                                 float garbled_thresh) {
+    if (!use_context) {
+        return {};
+    }
+    if (!session.committed_text.empty()) {
+        const std::string cleaned = clean_transcript_text(session.committed_text);
+        if (is_acceptable_transcript(cleaned, garbled_thresh)) {
+            return truncate_utf8_tail(cleaned, 120);
+        }
+    }
+    if (!session.last_partial_text.empty()) {
+        const std::string cleaned = clean_transcript_text(session.last_partial_text);
+        if (is_acceptable_transcript(cleaned, garbled_thresh)) {
+            return truncate_utf8_tail(cleaned, 80);
+        }
+    }
+    return {};
+}
+
 }  // namespace
 
 VoiceWebSocketServer::VoiceWebSocketServer(std::string model_path, uint16_t port,
@@ -28,7 +48,8 @@ VoiceWebSocketServer::VoiceWebSocketServer(std::string model_path, uint16_t port
                                            int min_speech_ms, float vad_energy,
                                            int silence_commit_ms, float no_speech_thold,
                                            bool use_zh_prompt, int partial_max_sec,
-                                           bool use_context_prompt, bool repeat_filter)
+                                           bool use_context_prompt, bool repeat_filter,
+                                           int max_utterance_sec, float garbled_ratio_thold)
     : model_path_(std::move(model_path)),
       port_(port),
       step_ms_(step_ms),
@@ -36,9 +57,11 @@ VoiceWebSocketServer::VoiceWebSocketServer(std::string model_path, uint16_t port
       vad_energy_(vad_energy),
       silence_commit_ms_(silence_commit_ms),
       no_speech_thold_(no_speech_thold),
-      partial_max_sec_(partial_max_sec > 0 ? partial_max_sec : 4),
+      partial_max_sec_(partial_max_sec > 0 ? partial_max_sec : 3),
+      max_utterance_sec_(max_utterance_sec > 0 ? max_utterance_sec : partial_max_sec_),
       use_context_prompt_(use_context_prompt),
       repeat_filter_(repeat_filter),
+      garbled_ratio_thold_(garbled_ratio_thold > 0.f ? garbled_ratio_thold : 0.15f),
       pool_(threads > 0 ? threads : 1),
       asr_(model_path_, no_speech_thold_, use_zh_prompt) {
     server_.init_asio();
@@ -128,6 +151,7 @@ void VoiceWebSocketServer::handle_control(ConnectionHdl hdl, const std::string& 
             std::lock_guard<std::mutex> lock(session.mutex);
             session.recording = false;
         }
+        session.finalize_pending.store(true);
         schedule_infer(hdl, true, false);
         std::cout << "[ws] 停止录音\n";
         return;
@@ -155,7 +179,11 @@ void VoiceWebSocketServer::handle_binary(ConnectionHdl hdl, const std::string& p
         const std::size_t count = payload.size() / sizeof(int16_t);
         session.append_pcm_int16(samples, count, vad_energy_, kChunkMs);
 
+        const int max_utterance_ms = max_utterance_sec_ * 1000;
         if (session.should_commit_on_pause(silence_commit_ms_)) {
+            pause_commit = true;
+            should_run = true;
+        } else if (session.should_commit_on_duration(max_utterance_ms)) {
             pause_commit = true;
             should_run = true;
         } else if (session.should_schedule_infer(step_ms_, min_speech_ms_)) {
@@ -204,7 +232,8 @@ void VoiceWebSocketServer::schedule_infer(ConnectionHdl hdl, bool final_pass,
 
             std::vector<float> pcm_copy;
             std::string language;
-            std::string committed_snapshot;
+            std::string context_storage;
+            std::string last_partial_snapshot;
             const bool do_commit = pause_commit;
 
             {
@@ -220,35 +249,40 @@ void VoiceWebSocketServer::schedule_infer(ConnectionHdl hdl, bool final_pass,
                         session_ptr->pcm_for_partial_infer(partial_max_ms);
                 }
                 language = session_ptr->language;
-                if (use_context_prompt_) {
-                    committed_snapshot = session_ptr->committed_text;
-                }
+                last_partial_snapshot = session_ptr->last_partial_text;
+                context_storage =
+                    build_context_prompt(*session_ptr, use_context_prompt_,
+                                         garbled_ratio_thold_);
                 if (!final_pass && !pause_commit) {
                     session_ptr->mark_inferred();
                 }
             }
 
             const bool short_audio =
+                !final_pass ||
                 pcm_copy.size() <
-                static_cast<std::size_t>(Session::kSampleRate) * 6;
+                    static_cast<std::size_t>(Session::kSampleRate) * 6;
             const std::string* ctx =
-                (use_context_prompt_ && !committed_snapshot.empty())
-                    ? &committed_snapshot
-                    : nullptr;
+                (use_context_prompt_ && !context_storage.empty()) ? &context_storage
+                                                                  : nullptr;
 
             if (pcm_copy.empty()) {
                 if (final_pass && !session_ptr->closed.load()) {
+                    session_ptr->finalize_pending.store(false);
                     send_text(hdl_copy, protocol::make_final(""));
                 }
                 return;
             }
 
-            const TranscribeResult tr =
-                asr_.transcribe(pcm_copy, language, ctx, short_audio);
+            const TranscribeResult tr = asr_.transcribe(
+                pcm_copy, language, ctx, short_audio, final_pass);
             if (session_ptr->closed.load()) {
                 return;
             }
             if (!tr.ok) {
+                if (final_pass) {
+                    session_ptr->finalize_pending.store(false);
+                }
                 send_text(hdl_copy, protocol::make_error(tr.error));
                 return;
             }
@@ -257,27 +291,51 @@ void VoiceWebSocketServer::schedule_infer(ConnectionHdl hdl, bool final_pass,
                 if (repeat_filter_ && is_repetitive_hallucination(tr.text)) {
                     std::cerr << "[ws] final 识别结果疑似重复幻觉\n";
                 }
-                send_text(hdl_copy, protocol::make_final(tr.text));
+                std::string final_text = tr.text;
+                if (!is_acceptable_transcript(final_text, garbled_ratio_thold_)) {
+                    std::cerr << "[ws] final 乱码已丢弃\n";
+                    final_text.clear();
+                }
+                session_ptr->finalize_pending.store(false);
+                send_text(hdl_copy, protocol::make_final(final_text));
                 return;
             }
 
-            if (repeat_filter_ && is_repetitive_hallucination(tr.text)) {
+            if (session_ptr->finalize_pending.load()) {
+                return;
+            }
+
+            if (!is_acceptable_transcript(tr.text, garbled_ratio_thold_)) {
+                return;
+            }
+
+            const std::string stable_tail = Session::stable_tail_for_display(
+                tr.text, last_partial_snapshot, garbled_ratio_thold_);
+            if (stable_tail.empty()) {
+                return;
+            }
+
+            if (repeat_filter_ && is_repetitive_hallucination(stable_tail)) {
                 return;
             }
 
             std::string outbound;
             {
                 std::lock_guard<std::mutex> lock(session_ptr->mutex);
-                outbound = session_ptr->display_text(tr.text);
-                session_ptr->last_partial = tr.text;
-                session_ptr->last_partial_text = tr.text;
+                if (session_ptr->finalize_pending.load()) {
+                    return;
+                }
+                outbound = session_ptr->display_text(stable_tail);
+                session_ptr->last_partial = stable_tail;
+                session_ptr->last_partial_text = stable_tail;
                 if (do_commit) {
-                    session_ptr->commit_segment(tr.text);
+                    session_ptr->commit_segment(stable_tail);
                     outbound = session_ptr->display_text("");
                 }
             }
 
-            if (session_ptr->closed.load()) {
+            if (session_ptr->closed.load() ||
+                session_ptr->finalize_pending.load()) {
                 return;
             }
             send_text(hdl_copy, protocol::make_partial(outbound));
@@ -324,6 +382,7 @@ void VoiceWebSocketServer::run() {
     std::cout << "模型：" << model_path_ << " | 推理间隔：" << step_ms_ << " ms"
               << " | VAD 能量阈值：" << vad_energy_
               << " | 停顿提交：" << silence_commit_ms_ << " ms"
-              << " | partial 尾部窗口：" << partial_max_sec_ << " s\n";
+              << " | partial 尾部窗口：" << partial_max_sec_ << " s"
+              << " | 最长未提交句段：" << max_utterance_sec_ << " s\n";
     server_.run();
 }

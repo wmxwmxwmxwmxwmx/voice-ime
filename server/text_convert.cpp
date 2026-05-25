@@ -1,5 +1,7 @@
 #include "text_convert.hpp"
 
+#include "text_quality.hpp"
+
 #include <opencc.h>
 
 #include <filesystem>
@@ -106,22 +108,26 @@ bool ensure_opencc(ThreadOpencc& conv) {
 }  // namespace
 
 std::string to_simplified_chinese(const std::string& utf8) {
-    if (utf8.empty()) {
-        return utf8;
+    const std::string cleaned = clean_transcript_text(utf8);
+    if (cleaned.empty()) {
+        return {};
     }
 
     auto& conv = thread_converter();
     if (!ensure_opencc(conv)) {
-        return utf8;
+        return cleaned;
     }
 
-    char* out = opencc_convert_utf8(conv.handle, utf8.c_str(),
+    char* out = opencc_convert_utf8(conv.handle, cleaned.c_str(),
                                     static_cast<size_t>(-1));
     if (!out) {
-        return utf8;
+        return cleaned;
     }
 
-    std::string result(out);
+    std::string result = clean_transcript_text(out);
     opencc_convert_utf8_free(out);
+    if (!is_acceptable_transcript(result, 0.5)) {
+        return cleaned;
+    }
     return result;
 }

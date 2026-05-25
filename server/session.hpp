@@ -26,6 +26,12 @@ struct Session {
     std::string last_partial_text;
     std::atomic<bool> infer_pending{false};
     std::atomic<bool> closed{false};
+    std::atomic<bool> finalize_pending{false};
+
+    // 返回空字符串表示拒绝本次 partial 更新
+    static std::string stable_tail_for_display(const std::string& new_tail,
+                                               const std::string& last_tail,
+                                               double max_garbled_ratio = 0.15);
 
     bool append_pcm_int16(const int16_t* data, std::size_t count, float energy_threshold,
                           int chunk_ms);
@@ -33,6 +39,7 @@ struct Session {
     bool should_schedule_infer(int step_ms, int min_speech_ms) const;
     void mark_inferred();
     bool should_commit_on_pause(int silence_commit_ms) const;
+    bool should_commit_on_duration(int max_utterance_ms) const;
     void commit_segment(const std::string& tail_text);
     std::vector<float> pcm_for_partial_infer(int max_tail_ms) const;
     std::vector<float> pcm_all() const;
