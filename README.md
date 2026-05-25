@@ -90,6 +90,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -Wno-dev
 | `--vad-energy` | 能量 VAD 的 RMS 阈值（默认 0.015） |
 | `--silence-commit-ms` | 静音多久将当前段落锁定为已确认，毫秒（默认 800） |
 | `--no-speech-thold` | Whisper 非语音阈值（默认 0.6） |
+| `--zh-prompt` | 为中文启用 Whisper `initial_prompt`（默认关闭，避免提示词泄漏） |
 
 ### 5. 启动并打开前端
 
@@ -99,7 +100,24 @@ python -m http.server 8080 -d frontend
 
 在浏览器打开 [http://localhost:8080](http://localhost:8080)，允许麦克风权限，点击 **开始** 后说话。
 
+**首次使用或缺少 RNNoise 文件时**，在项目根目录执行：
+
+```powershell
+.\scripts\vendor_rnnoise.ps1
+```
+
+```bash
+chmod +x scripts/vendor_rnnoise.sh && ./scripts/vendor_rnnoise.sh
+```
+
 可选：通过查询参数指定 WebSocket 地址：`http://localhost:8080?ws=ws://localhost:9000`
+
+### 浏览器音频（AudioWorklet + RNNoise）
+
+- 采集链：`麦克风 → RNNoise（48 kHz，可选）→ PCM 组帧（16 kHz，200 ms）→ WebSocket`。
+- 须通过 `http://localhost` 或 `https` 访问页面（`file://` 无法使用 AudioWorklet）；不可用时会回退到 ScriptProcessor。
+- 界面 **浏览器降噪（RNNoise）** 默认开启；开启时关闭浏览器内置 `noiseSuppression`，保留 `echoCancellation`。
+- 静态资源来自 [simple-rnnoise-wasm](https://www.npmjs.com/package/simple-rnnoise-wasm)，由 `scripts/vendor_rnnoise.*` 下载到 `frontend/vendor/rnnoise/`。
 
 ## 通信协议（MVP）
 
@@ -113,7 +131,7 @@ python -m http.server 8080 -d frontend
 
 ```
 voice-ime/
-├── frontend/          # 浏览器界面
+├── frontend/          # 浏览器界面（audio/ worklet、vendor/rnnoise/）
 ├── server/            # C++ WebSocket + ASR
 ├── third_party/       # whisper.cpp、websocketpp、asio（子模块）
 ├── scripts/           # 模型下载脚本
@@ -124,7 +142,7 @@ voice-ime/
 ## 简体中文输出
 
 - 语言为 **中文**（`zh`）或 **自动**（`auto`）时，识别结果经 **OpenCC**（`t2s`）转为**简体中文**后再返回；**英语**（`en`）不转换。
-- 中文模式会使用 Whisper `initial_prompt` 引导普通话简体输出。
+- 默认**不再**向 Whisper 注入长句 `initial_prompt`（语言由 `language=zh` 固定，简体由 OpenCC 保证），减少「以下是普通话简体中文」等幻觉残片；后处理会剔除相关子串。若需旧行为可启动服务时加 `--zh-prompt`。
 - 若 `voice_server` 旁缺少 `opencc/t2s.json` 及 `.ocd2` 字典，服务仍可运行，但不会在日志外提示的情况下跳过繁简转换（stderr 会打印一次 `[opencc]` 警告）。
 - 识别准确率主要取决于 Whisper 模型大小；建议使用 `ggml-base.bin` 或更大，并在界面选择 **中文**。
 
@@ -132,7 +150,7 @@ voice-ime/
 
 - **能量 VAD**：低于 `--vad-energy` 的 PCM 块不写入缓冲，减少静音送入 Whisper 导致的幻觉（如 `(音)`）。
 - **增量识别**：仅对「未锁定尾部」音频推理；`partial` / `final` 下发 **已确认文本 + 当前尾部**，停顿约 `--silence-commit-ms`（默认 800ms）后锁定上一段，继续说只在后面增长。
-- **Whisper**：启用 `no_speech_thold`、`suppress_nst`；括号片段（如 `(转写)`）会在后处理中剔除。
+- **Whisper**：启用 `no_speech_thold`、`suppress_nst`；`sanitize_transcript` 剔除括号幻觉与历史 prompt 残片。
 - 推荐：`ggml-base.bin` 或更大、界面选 **中文**；麦克风较弱时可略降低 `--vad-energy`（如 `0.01`）。
 
 ## 性能说明
@@ -143,10 +161,9 @@ voice-ime/
 
 ## 后续规划（MVP 之后）
 
-- Whisper 内置 VAD 模型、RNNoise、热词
+- Whisper 内置 VAD 模型、热词
 - Docker 部署
 - TLS（WSS）
-- AudioWorklet（替代 ScriptProcessorNode）
 
 ## 许可证
 

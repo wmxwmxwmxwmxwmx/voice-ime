@@ -25,7 +25,8 @@ struct InferPendingGuard {
 VoiceWebSocketServer::VoiceWebSocketServer(std::string model_path, uint16_t port,
                                            std::size_t threads, int step_ms,
                                            int min_speech_ms, float vad_energy,
-                                           int silence_commit_ms, float no_speech_thold)
+                                           int silence_commit_ms, float no_speech_thold,
+                                           bool use_zh_prompt)
     : model_path_(std::move(model_path)),
       port_(port),
       step_ms_(step_ms),
@@ -34,7 +35,7 @@ VoiceWebSocketServer::VoiceWebSocketServer(std::string model_path, uint16_t port
       silence_commit_ms_(silence_commit_ms),
       no_speech_thold_(no_speech_thold),
       pool_(threads > 0 ? threads : 1),
-      asr_(model_path_, no_speech_thold_) {
+      asr_(model_path_, no_speech_thold_, use_zh_prompt) {
     server_.init_asio();
     server_.set_reuse_addr(true);
 
@@ -66,9 +67,18 @@ void VoiceWebSocketServer::on_open(ConnectionHdl hdl) {
 }
 
 void VoiceWebSocketServer::on_close(ConnectionHdl hdl) {
-    schedule_infer(hdl, true, false);
-    std::lock_guard<std::mutex> lock(sessions_mutex_);
-    sessions_.erase(hdl);
+    {
+        std::lock_guard<std::mutex> lock(sessions_mutex_);
+        auto it = sessions_.find(hdl);
+        if (it != sessions_.end()) {
+            {
+                std::lock_guard<std::mutex> slock(it->second->mutex);
+                it->second->recording = false;
+            }
+            it->second->closed.store(true);
+            sessions_.erase(it);
+        }
+    }
     std::cout << "[ws] 客户端已断开\n";
 }
 
@@ -180,6 +190,10 @@ void VoiceWebSocketServer::schedule_infer(ConnectionHdl hdl, bool final_pass,
     if (!pool_.enqueue([this, hdl_copy, session_ptr, final_pass, pause_commit]() {
             InferPendingGuard guard{session_ptr};
 
+            if (session_ptr->closed.load()) {
+                return;
+            }
+
             std::vector<float> pcm_copy;
             std::string language;
             bool do_commit = pause_commit || final_pass;
@@ -198,7 +212,7 @@ void VoiceWebSocketServer::schedule_infer(ConnectionHdl hdl, bool final_pass,
             }
 
             if (pcm_copy.empty()) {
-                if (final_pass) {
+                if (final_pass && !session_ptr->closed.load()) {
                     std::string out;
                     {
                         std::lock_guard<std::mutex> lock(session_ptr->mutex);
@@ -210,6 +224,9 @@ void VoiceWebSocketServer::schedule_infer(ConnectionHdl hdl, bool final_pass,
             }
 
             const TranscribeResult tr = asr_.transcribe(pcm_copy, language);
+            if (session_ptr->closed.load()) {
+                return;
+            }
             if (!tr.ok) {
                 send_text(hdl_copy, protocol::make_error(tr.error));
                 return;
@@ -227,6 +244,9 @@ void VoiceWebSocketServer::schedule_infer(ConnectionHdl hdl, bool final_pass,
                 }
             }
 
+            if (session_ptr->closed.load()) {
+                return;
+            }
             if (final_pass) {
                 send_text(hdl_copy, protocol::make_final(outbound));
             } else {
@@ -243,6 +263,12 @@ void VoiceWebSocketServer::send_text(ConnectionHdl hdl, const std::string& json)
         server_.get_io_service().post([this, hdl, json]() {
             try {
                 server_.send(hdl, json, websocketpp::frame::opcode::text);
+            } catch (const websocketpp::exception& e) {
+                const std::string msg = e.what();
+                if (msg.find("Bad Connection") == std::string::npos &&
+                    msg.find("End of File") == std::string::npos) {
+                    std::cerr << "[ws] 发送失败：" << msg << "\n";
+                }
             } catch (const std::exception& e) {
                 std::cerr << "[ws] 发送失败：" << e.what() << "\n";
             }

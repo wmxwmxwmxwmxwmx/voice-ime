@@ -38,6 +38,7 @@ void Session::clear() {
     trailing_silence_ms = 0;
     last_partial_text.clear();
     infer_pending = false;
+    closed = false;
 }
 
 bool Session::should_schedule_infer(int step_ms, int min_speech_ms) const {

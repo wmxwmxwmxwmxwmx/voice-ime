@@ -25,6 +25,7 @@ struct Session {
     int trailing_silence_ms = 0;
     std::string last_partial_text;
     std::atomic<bool> infer_pending{false};
+    std::atomic<bool> closed{false};
 
     bool append_pcm_int16(const int16_t* data, std::size_t count, float energy_threshold,
                           int chunk_ms);

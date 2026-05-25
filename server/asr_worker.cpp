@@ -50,6 +50,26 @@ std::string collect_segments(whisper_context* ctx) {
 
 constexpr const char* kZhInitialPrompt = "以下是普通话简体中文。";
 
+std::string filter_prompt_artifacts(const std::string& text) {
+    static const char* kPhrases[] = {
+        u8"以下是普通话简体中文。",
+        u8"以下是普通话简体中文",
+        u8"以下是普通话",
+        u8"简体中文",
+        u8"普通话",
+        u8"以下是",
+    };
+    std::string out = text;
+    for (const char* phrase : kPhrases) {
+        const std::string p(phrase);
+        std::size_t pos = 0;
+        while ((pos = out.find(p, pos)) != std::string::npos) {
+            out.erase(pos, p.size());
+        }
+    }
+    return out;
+}
+
 // 去掉 ASCII 括号片段，如 (音)、(转写)
 std::string strip_bracket_hallucinations(const std::string& text) {
     std::string out;
@@ -69,8 +89,10 @@ std::string strip_bracket_hallucinations(const std::string& text) {
 
 }  // namespace
 
-AsrEngine::AsrEngine(std::string model_path, float no_speech_thold)
-    : model_path_(std::move(model_path)), no_speech_thold_(no_speech_thold) {}
+AsrEngine::AsrEngine(std::string model_path, float no_speech_thold, bool use_zh_prompt)
+    : model_path_(std::move(model_path)),
+      no_speech_thold_(no_speech_thold),
+      use_zh_prompt_(use_zh_prompt) {}
 
 bool AsrEngine::model_available() const {
     std::string err;
@@ -95,7 +117,11 @@ std::string AsrEngine::postprocess(const std::string& text) {
     while (!out.empty() && out.back() == ' ') {
         out.pop_back();
     }
-    return strip_bracket_hallucinations(out);
+    return sanitize_transcript(out);
+}
+
+std::string AsrEngine::sanitize_transcript(const std::string& text) {
+    return filter_prompt_artifacts(strip_bracket_hallucinations(text));
 }
 
 TranscribeResult AsrEngine::transcribe(const std::vector<float>& pcm,
@@ -133,7 +159,7 @@ TranscribeResult AsrEngine::transcribe(const std::vector<float>& pcm,
         wparams.detect_language = true;
     }
 
-    if (language == "zh") {
+    if (use_zh_prompt_ && language == "zh") {
         wparams.initial_prompt = kZhInitialPrompt;
         wparams.carry_initial_prompt = false;
     }

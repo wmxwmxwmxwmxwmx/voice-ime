@@ -1,6 +1,7 @@
-const SAMPLE_RATE = 16000;
+const OUTPUT_SAMPLE_RATE = 16000;
+const CAPTURE_SAMPLE_RATE = 48000;
 const CHUNK_MS = 200;
-const SAMPLES_PER_CHUNK = (SAMPLE_RATE * CHUNK_MS) / 1000;
+const SAMPLES_PER_CHUNK = (OUTPUT_SAMPLE_RATE * CHUNK_MS) / 1000;
 
 const startBtn = document.getElementById("startBtn");
 const stopBtn = document.getElementById("stopBtn");
@@ -9,15 +10,137 @@ const recStatus = document.getElementById("recStatus");
 const resultEl = document.getElementById("result");
 const serverUrlInput = document.getElementById("serverUrl");
 const languageSelect = document.getElementById("language");
+const denoiseCheckbox = document.getElementById("denoiseEnabled");
 
 let socket = null;
 let audioContext = null;
 let mediaStream = null;
-let processor = null;
+let sourceNode = null;
+let rnnoiseNode = null;
+let pcmCaptureNode = null;
+let silentGain = null;
+let scriptProcessor = null;
 let pcmBuffer = [];
 let finalText = "";
 let partialText = "";
 let recording = false;
+let useWorklet = false;
+
+function denoiseEnabled() {
+  return denoiseCheckbox ? denoiseCheckbox.checked : true;
+}
+
+function supportsAudioWorklet() {
+  return (
+    typeof window.AudioContext !== "undefined" &&
+    typeof AudioWorkletNode !== "undefined"
+  );
+}
+
+function vendorUrl(file) {
+  return new URL(`./vendor/rnnoise/${file}`, window.location.href).href;
+}
+
+function audioUrl(file) {
+  return new URL(`./audio/${file}`, window.location.href).href;
+}
+
+async function compileRnnoiseWasm() {
+  const wasmUrl = vendorUrl("simple-rnnoise.wasm");
+  const response = await fetch(wasmUrl);
+  if (!response.ok) {
+    throw new Error(`无法加载 RNNoise WASM：${wasmUrl}`);
+  }
+  const bytes = await response.arrayBuffer();
+  return WebAssembly.compile(bytes);
+}
+
+async function setupWorkletChain(stream) {
+  const denoise = denoiseEnabled();
+  const captureRate = denoise ? CAPTURE_SAMPLE_RATE : OUTPUT_SAMPLE_RATE;
+
+  audioContext = new AudioContext({ sampleRate: captureRate });
+  await audioContext.resume();
+  sourceNode = audioContext.createMediaStreamSource(stream);
+
+  if (denoise) {
+    const wasmModule = await compileRnnoiseWasm();
+    await audioContext.audioWorklet.addModule(vendorUrl("rnnoise.worklet.js"));
+    rnnoiseNode = new AudioWorkletNode(audioContext, "rnnoise", {
+      channelCount: 1,
+      channelCountMode: "explicit",
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      processorOptions: { module: wasmModule },
+    });
+    rnnoiseNode.port.postMessage(true);
+  }
+
+  await audioContext.audioWorklet.addModule(audioUrl("pcm-capture-processor.js"));
+  pcmCaptureNode = new AudioWorkletNode(audioContext, "pcm-capture", {
+    channelCount: 1,
+    channelCountMode: "explicit",
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    outputChannelCount: [1],
+    processorOptions: {
+      outputSampleRate: OUTPUT_SAMPLE_RATE,
+      chunkSamples: SAMPLES_PER_CHUNK,
+    },
+  });
+
+  pcmCaptureNode.port.onmessage = (event) => {
+    if (!recording) return;
+    const msg = event.data;
+    if (msg && msg.type === "pcm" && socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(msg.buffer);
+    }
+  };
+
+  silentGain = audioContext.createGain();
+  silentGain.gain.value = 0;
+
+  if (denoise && rnnoiseNode) {
+    sourceNode.connect(rnnoiseNode);
+    rnnoiseNode.connect(pcmCaptureNode);
+  } else {
+    sourceNode.connect(pcmCaptureNode);
+  }
+  pcmCaptureNode.connect(silentGain);
+  silentGain.connect(audioContext.destination);
+  useWorklet = true;
+}
+
+function setupScriptProcessorFallback(stream) {
+  audioContext = new AudioContext({ sampleRate: OUTPUT_SAMPLE_RATE });
+  sourceNode = audioContext.createMediaStreamSource(stream);
+  pcmBuffer = [];
+
+  scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+  scriptProcessor.onaudioprocess = (e) => {
+    if (!recording) return;
+    const input = e.inputBuffer.getChannelData(0);
+    for (let i = 0; i < input.length; i++) {
+      pcmBuffer.push(input[i]);
+    }
+    while (pcmBuffer.length >= SAMPLES_PER_CHUNK) {
+      const chunk = pcmBuffer.splice(0, SAMPLES_PER_CHUNK);
+      const merged = new Float32Array(chunk);
+      const int16 = floatToInt16(merged);
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(int16.buffer);
+      }
+    }
+  };
+
+  silentGain = audioContext.createGain();
+  silentGain.gain.value = 0;
+  sourceNode.connect(scriptProcessor);
+  scriptProcessor.connect(silentGain);
+  silentGain.connect(audioContext.destination);
+  useWorklet = false;
+}
 
 function setWsStatus(online) {
   wsStatus.textContent = online ? "已连接" : "未连接";
@@ -64,8 +187,7 @@ function flushPcmChunk() {
     merged[i] = pcmBuffer[i];
   }
   pcmBuffer = [];
-  const int16 = floatToInt16(merged);
-  socket.send(int16.buffer);
+  socket.send(floatToInt16(merged).buffer);
 }
 
 function connectWebSocket() {
@@ -111,6 +233,36 @@ function connectWebSocket() {
   });
 }
 
+function teardownAudioNodes() {
+  if (pcmCaptureNode) {
+    pcmCaptureNode.port.onmessage = null;
+    pcmCaptureNode.disconnect();
+    pcmCaptureNode = null;
+  }
+  if (rnnoiseNode) {
+    rnnoiseNode.port.postMessage(false);
+    rnnoiseNode.disconnect();
+    rnnoiseNode = null;
+  }
+  if (scriptProcessor) {
+    scriptProcessor.disconnect();
+    scriptProcessor.onaudioprocess = null;
+    scriptProcessor = null;
+  }
+  if (sourceNode) {
+    sourceNode.disconnect();
+    sourceNode = null;
+  }
+  if (silentGain) {
+    silentGain.disconnect();
+    silentGain = null;
+  }
+  if (audioContext) {
+    audioContext.close();
+    audioContext = null;
+  }
+}
+
 async function startRecording() {
   startBtn.disabled = true;
   stopBtn.disabled = false;
@@ -123,42 +275,29 @@ async function startRecording() {
       await connectWebSocket();
     }
 
+    const useDenoise = denoiseEnabled();
     mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
-        sampleRate: SAMPLE_RATE,
         echoCancellation: true,
-        noiseSuppression: true,
+        noiseSuppression: !useDenoise,
       },
     });
 
-    audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
-    const source = audioContext.createMediaStreamSource(mediaStream);
-
-    // ScriptProcessor 已弃用，MVP 阶段暂用
-    processor = audioContext.createScriptProcessor(4096, 1, 1);
-    processor.onaudioprocess = (e) => {
-      if (!recording) return;
-      const input = e.inputBuffer.getChannelData(0);
-      for (let i = 0; i < input.length; i++) {
-        pcmBuffer.push(input[i]);
+    if (supportsAudioWorklet() && window.isSecureContext) {
+      try {
+        await setupWorkletChain(mediaStream);
+      } catch (workletErr) {
+        console.warn("AudioWorklet 初始化失败，回退 ScriptProcessor：", workletErr);
+        teardownAudioNodes();
+        setupScriptProcessorFallback(mediaStream);
       }
-      while (pcmBuffer.length >= SAMPLES_PER_CHUNK) {
-        const chunk = pcmBuffer.splice(0, SAMPLES_PER_CHUNK);
-        const merged = new Float32Array(chunk);
-        const int16 = floatToInt16(merged);
-        if (socket && socket.readyState === WebSocket.OPEN) {
-          socket.send(int16.buffer);
-        }
+    } else {
+      if (!window.isSecureContext) {
+        console.warn("非安全上下文，无法使用 AudioWorklet，已回退 ScriptProcessor");
       }
-    };
-
-    // 静音节点：保持处理链运行，避免麦克风回放
-    const silent = audioContext.createGain();
-    silent.gain.value = 0;
-    source.connect(processor);
-    processor.connect(silent);
-    silent.connect(audioContext.destination);
+      setupScriptProcessorFallback(mediaStream);
+    }
 
     const lang = languageSelect.value;
     socket.send(JSON.stringify({ cmd: "start", language: lang }));
@@ -178,7 +317,7 @@ function stopRecording() {
   startBtn.disabled = false;
   stopBtn.disabled = true;
 
-  if (pcmBuffer.length > 0) {
+  if (!useWorklet && pcmBuffer.length > 0) {
     flushPcmChunk();
   }
 
@@ -186,16 +325,7 @@ function stopRecording() {
     socket.send(JSON.stringify({ cmd: "stop" }));
   }
 
-  if (processor) {
-    processor.disconnect();
-    processor.onaudioprocess = null;
-    processor = null;
-  }
-
-  if (audioContext) {
-    audioContext.close();
-    audioContext = null;
-  }
+  teardownAudioNodes();
 
   if (mediaStream) {
     mediaStream.getTracks().forEach((t) => t.stop());
@@ -205,6 +335,12 @@ function stopRecording() {
 
 startBtn.addEventListener("click", startRecording);
 stopBtn.addEventListener("click", stopRecording);
+
+window.addEventListener("pagehide", () => {
+  if (recording) {
+    stopRecording();
+  }
+});
 
 const params = new URLSearchParams(window.location.search);
 if (params.has("ws")) {

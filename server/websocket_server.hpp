@@ -21,7 +21,8 @@ class VoiceWebSocketServer {
 public:
     VoiceWebSocketServer(std::string model_path, uint16_t port, std::size_t threads,
                          int step_ms, int min_speech_ms, float vad_energy,
-                         int silence_commit_ms, float no_speech_thold);
+                         int silence_commit_ms, float no_speech_thold,
+                         bool use_zh_prompt = false);
     ~VoiceWebSocketServer();
 
     bool validate_model();

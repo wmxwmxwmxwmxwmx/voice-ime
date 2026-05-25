@@ -21,7 +21,8 @@ void print_usage() {
         << "  --min-speech-ms <毫秒>   尾部至少多长才触发 partial（默认：500）\n"
         << "  --vad-energy <阈值>      能量 VAD RMS 阈值（默认：0.015）\n"
         << "  --silence-commit-ms <毫秒> 停顿多久锁定已确认段落（默认：800）\n"
-        << "  --no-speech-thold <值>   Whisper 非语音阈值（默认：0.6）\n";
+        << "  --no-speech-thold <值>   Whisper 非语音阈值（默认：0.6）\n"
+        << "  --zh-prompt              为中文启用 Whisper initial_prompt（默认关闭）\n";
 }
 
 struct Options {
@@ -33,6 +34,7 @@ struct Options {
     float vad_energy = 0.015f;
     int silence_commit_ms = 800;
     float no_speech_thold = 0.6f;
+    bool use_zh_prompt = false;
 };
 
 bool parse_args(int argc, char** argv, Options& opts) {
@@ -76,6 +78,8 @@ bool parse_args(int argc, char** argv, Options& opts) {
             const auto v = need_value("--no-speech-thold");
             if (v.empty()) return false;
             opts.no_speech_thold = std::stof(v);
+        } else if (arg == "--zh-prompt") {
+            opts.use_zh_prompt = true;
         } else if (arg == "--help" || arg == "-h") {
             print_usage();
             std::exit(0);
@@ -111,7 +115,8 @@ int main(int argc, char** argv) {
     try {
         VoiceWebSocketServer server(opts.model, opts.port, opts.threads, opts.step_ms,
                                     opts.min_speech_ms, opts.vad_energy,
-                                    opts.silence_commit_ms, opts.no_speech_thold);
+                                    opts.silence_commit_ms, opts.no_speech_thold,
+                                    opts.use_zh_prompt);
         if (!server.validate_model()) {
             return 1;
         }

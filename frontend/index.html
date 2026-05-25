@@ -36,6 +36,10 @@
           <option value="en">英语</option>
         </select>
       </label>
+      <label class="checkbox-label">
+        <input id="denoiseEnabled" type="checkbox" checked />
+        浏览器降噪（RNNoise）
+      </label>
     </section>
 
     <section class="transcript">
@@ -45,7 +49,9 @@
 
     <p class="hint">
       请先用 <code>python -m http.server 8080 -d frontend</code> 启动页面，再打开
-      <code>http://localhost:8080</code>。
+      <code>http://localhost:8080</code>（须为 http/https 安全上下文，AudioWorklet 在
+      <code>file://</code> 下不可用）。首次克隆请执行
+      <code>.\scripts\vendor_rnnoise.ps1</code> 拉取 RNNoise 静态资源。
     </p>
   </main>
   <script src="app.js"></script>
