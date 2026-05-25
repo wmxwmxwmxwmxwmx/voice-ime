@@ -3,23 +3,27 @@
 #include "audio_vad.hpp"
 #include "text_quality.hpp"
 
+#include <algorithm>
+
 bool Session::append_pcm_int16(const int16_t* data, std::size_t count,
                                float energy_threshold, int chunk_ms) {
     const float rms = chunk_rms(data, count);
+
+    pcm.reserve(pcm.size() + count);
+    for (std::size_t i = 0; i < count; ++i) {
+        pcm.push_back(static_cast<float>(data[i]) / 32768.0f);
+    }
+    if (pcm.size() > kMaxSamples) {
+        const std::size_t drop = pcm.size() - kMaxSamples;
+        pcm.erase(pcm.begin(), pcm.begin() + static_cast<std::ptrdiff_t>(drop));
+        if (infer_pcm_offset >= drop) {
+            infer_pcm_offset -= drop;
+        } else {
+            infer_pcm_offset = 0;
+        }
+    }
+
     if (is_speech_chunk(rms, energy_threshold)) {
-        pcm.reserve(pcm.size() + count);
-        for (std::size_t i = 0; i < count; ++i) {
-            pcm.push_back(static_cast<float>(data[i]) / 32768.0f);
-        }
-        if (pcm.size() > kMaxSamples) {
-            const std::size_t drop = pcm.size() - kMaxSamples;
-            pcm.erase(pcm.begin(), pcm.begin() + static_cast<std::ptrdiff_t>(drop));
-            if (infer_pcm_offset >= drop) {
-                infer_pcm_offset -= drop;
-            } else {
-                infer_pcm_offset = 0;
-            }
-        }
         speech_seen = true;
         trailing_silence_ms = 0;
         return true;
@@ -44,7 +48,7 @@ void Session::clear() {
 }
 
 bool Session::should_schedule_infer(int step_ms, int min_speech_ms) const {
-    if (!recording || !speech_seen) {
+    if (!recording) {
         return false;
     }
     const std::size_t tail_samples = pcm.size() > infer_pcm_offset
@@ -59,7 +63,13 @@ bool Session::should_schedule_infer(int step_ms, int min_speech_ms) const {
     const auto now = std::chrono::steady_clock::now();
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         now - last_infer_time);
-    return elapsed.count() >= step_ms;
+    if (elapsed.count() < step_ms) {
+        return false;
+    }
+    if (speech_seen) {
+        return true;
+    }
+    return tail_samples >= min_samples * 6;
 }
 
 void Session::mark_inferred() {
@@ -98,6 +108,30 @@ void Session::commit_segment(const std::string& tail_text) {
     trailing_silence_ms = 0;
 }
 
+std::vector<float> Session::extract_speech_pcm(const std::vector<float>& pcm,
+                                               float energy_threshold, int chunk_ms) {
+    if (pcm.empty() || chunk_ms <= 0) {
+        return {};
+    }
+    const std::size_t chunk_samples =
+        static_cast<std::size_t>(kSampleRate) * static_cast<std::size_t>(chunk_ms) / 1000;
+    if (chunk_samples == 0) {
+        return pcm;
+    }
+
+    std::vector<float> speech;
+    speech.reserve(pcm.size());
+    for (std::size_t i = 0; i < pcm.size(); i += chunk_samples) {
+        const std::size_t end = std::min(i + chunk_samples, pcm.size());
+        const float rms = chunk_rms_float(pcm.data() + i, end - i);
+        if (is_speech_chunk(rms, energy_threshold)) {
+            speech.insert(speech.end(), pcm.begin() + static_cast<std::ptrdiff_t>(i),
+                          pcm.begin() + static_cast<std::ptrdiff_t>(end));
+        }
+    }
+    return speech;
+}
+
 std::vector<float> Session::pcm_for_partial_infer(int max_tail_ms) const {
     if (pcm.size() <= infer_pcm_offset) {
         return {};
@@ -108,7 +142,28 @@ std::vector<float> Session::pcm_for_partial_infer(int max_tail_ms) const {
         pcm.size() > cap_samples ? pcm.size() - cap_samples : 0;
     const std::size_t start =
         tail_start > infer_pcm_offset ? tail_start : infer_pcm_offset;
-    return std::vector<float>(pcm.begin() + static_cast<std::ptrdiff_t>(start), pcm.end());
+    const std::vector<float> tail(
+        pcm.begin() + static_cast<std::ptrdiff_t>(start), pcm.end());
+    return tail;
+}
+
+std::vector<float> Session::pcm_for_final_infer(float energy_threshold, int chunk_ms) const {
+    std::vector<float> speech = extract_speech_pcm(pcm, energy_threshold, chunk_ms);
+    const std::size_t min_samples =
+        static_cast<std::size_t>(kSampleRate) * 3 / 10;  // 至少 300ms
+    if (speech.size() >= min_samples) {
+        if (speech.size() > kMaxSamples) {
+            speech.erase(speech.begin(),
+                         speech.end() - static_cast<std::ptrdiff_t>(kMaxSamples));
+        }
+        return speech;
+    }
+    const std::size_t fallback_samples = static_cast<std::size_t>(kSampleRate) * 6;
+    if (pcm.size() <= fallback_samples) {
+        return pcm;
+    }
+    return std::vector<float>(pcm.end() - static_cast<std::ptrdiff_t>(fallback_samples),
+                              pcm.end());
 }
 
 std::vector<float> Session::pcm_all() const {
@@ -125,9 +180,10 @@ bool Session::has_pending_tail() const {
 
 std::string Session::stable_tail_for_display(const std::string& new_tail,
                                              const std::string& last_tail,
-                                             double max_garbled_ratio) {
+                                             double max_garbled_ratio,
+                                             const std::string& language) {
     const std::string collapsed = collapse_adjacent_repeats(new_tail);
-    if (should_reject_partial(collapsed, last_tail, max_garbled_ratio)) {
+    if (should_reject_partial(collapsed, last_tail, max_garbled_ratio, language)) {
         return {};
     }
     if (last_tail.empty()) {

@@ -31,7 +31,8 @@ struct Session {
     // 返回空字符串表示拒绝本次 partial 更新
     static std::string stable_tail_for_display(const std::string& new_tail,
                                                const std::string& last_tail,
-                                               double max_garbled_ratio = 0.15);
+                                               double max_garbled_ratio = 0.15,
+                                               const std::string& language = "");
 
     bool append_pcm_int16(const int16_t* data, std::size_t count, float energy_threshold,
                           int chunk_ms);
@@ -42,6 +43,9 @@ struct Session {
     bool should_commit_on_duration(int max_utterance_ms) const;
     void commit_segment(const std::string& tail_text);
     std::vector<float> pcm_for_partial_infer(int max_tail_ms) const;
+    std::vector<float> pcm_for_final_infer(float energy_threshold, int chunk_ms) const;
+    static std::vector<float> extract_speech_pcm(const std::vector<float>& pcm,
+                                                 float energy_threshold, int chunk_ms);
     std::vector<float> pcm_all() const;
     std::string display_text(const std::string& tail) const;
     bool has_pending_tail() const;

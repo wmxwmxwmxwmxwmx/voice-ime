@@ -21,8 +21,12 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
 
     this.port.onmessage = (event) => {
       const data = event.data;
-      if (data && typeof data.enabled === "boolean") {
+      if (!data) return;
+      if (typeof data.enabled === "boolean") {
         this.enabled = data.enabled;
+      }
+      if (data.flush) {
+        this.flushPending(true);
       }
     };
   }
@@ -37,16 +41,33 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
     }
   }
 
+  emitInt16(slice) {
+    if (slice.length === 0) return;
+    const int16 = new Int16Array(slice.length);
+    for (let i = 0; i < slice.length; i++) {
+      const s = Math.max(-1, Math.min(1, slice[i]));
+      int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    this.port.postMessage({ type: "pcm", buffer: int16.buffer }, [int16.buffer]);
+  }
+
   flushChunks() {
     while (this.pending.length >= this.chunkSamples) {
       const slice = this.pending.splice(0, this.chunkSamples);
-      const int16 = new Int16Array(slice.length);
-      for (let i = 0; i < slice.length; i++) {
-        const s = Math.max(-1, Math.min(1, slice[i]));
-        int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-      }
-      this.port.postMessage({ type: "pcm", buffer: int16.buffer }, [int16.buffer]);
+      this.emitInt16(slice);
     }
+  }
+
+  flushPending(forceAll) {
+    if (forceAll) {
+      if (this.pending.length > 0) {
+        const slice = this.pending.splice(0, this.pending.length);
+        this.emitInt16(slice);
+      }
+      this.port.postMessage({ type: "flushed" });
+      return;
+    }
+    this.flushChunks();
   }
 
   process(inputs, outputs) {

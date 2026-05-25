@@ -5,4 +5,6 @@
 
 float chunk_rms(const int16_t* data, std::size_t count);
 
+float chunk_rms_float(const float* data, std::size_t count);
+
 bool is_speech_chunk(float rms, float threshold);

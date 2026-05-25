@@ -108,7 +108,49 @@ bool is_garbled_codepoint(std::uint32_t cp) {
     if (cp >= 0xFDD0 && cp <= 0xFDEF) {
         return true;
     }
+    if (cp >= 0xF0000 && cp <= 0xFFFFD) {
+        return true;
+    }
+    if (cp >= 0x100000 && cp <= 0x10FFFD) {
+        return true;
+    }
     return false;
+}
+
+bool is_cjk_codepoint(std::uint32_t cp) {
+    return (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3400 && cp <= 0x4DBF);
+}
+
+bool transcript_has_cjk(const std::string& text) {
+    for (std::uint32_t cp : utf8_to_codepoints(text)) {
+        if (is_cjk_codepoint(cp)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool transcript_has_latin_letters(const std::string& text) {
+    for (std::uint32_t cp : utf8_to_codepoints(text)) {
+        if ((cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z')) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string apply_language_output_filter(const std::string& text,
+                                         const std::string& language) {
+    if (text.empty() || language != "zh") {
+        return text;
+    }
+    if (transcript_has_cjk(text)) {
+        return text;
+    }
+    if (transcript_has_latin_letters(text)) {
+        return {};
+    }
+    return text;
 }
 
 bool is_readable_codepoint(std::uint32_t cp) {
@@ -307,26 +349,56 @@ bool is_acceptable_transcript(const std::string& text, double max_garbled_ratio)
     return readable >= 1;
 }
 
+std::string extract_readable_transcript(const std::string& text) {
+    const std::string cleaned = clean_transcript_text(text);
+    std::vector<std::uint32_t> kept;
+    kept.reserve(cleaned.size() / 3);
+    for (std::uint32_t cp : utf8_to_codepoints(cleaned)) {
+        if (is_readable_codepoint(cp)) {
+            kept.push_back(cp);
+        }
+    }
+    return codepoints_to_utf8(kept);
+}
+
+std::string prepare_transcript_for_output(const std::string& text, double max_garbled_ratio,
+                                          const std::string& language) {
+    const std::string cleaned = clean_transcript_text(text);
+    if (is_acceptable_transcript(cleaned, max_garbled_ratio)) {
+        return apply_language_output_filter(cleaned, language);
+    }
+    std::string extracted = extract_readable_transcript(text);
+    if (extracted.empty()) {
+        return {};
+    }
+    if (!is_acceptable_transcript(extracted, max_garbled_ratio)) {
+        return {};
+    }
+    return apply_language_output_filter(extracted, language);
+}
+
 bool should_reject_partial(const std::string& new_tail, const std::string& last_tail,
-                           double max_garbled_ratio) {
+                           double max_garbled_ratio, const std::string& language) {
     if (new_tail.empty()) {
         return true;
     }
-    if (!is_acceptable_transcript(new_tail, max_garbled_ratio)) {
+    const std::string prepared =
+        prepare_transcript_for_output(new_tail, max_garbled_ratio, language);
+    if (prepared.empty()) {
         return true;
     }
-    if (is_repetitive_hallucination(new_tail)) {
+    if (is_repetitive_hallucination(prepared)) {
         return true;
     }
     if (last_tail.empty()) {
         return false;
     }
-    if (new_tail.find(last_tail + last_tail) != std::string::npos) {
+    if (prepared.find(last_tail + last_tail) != std::string::npos) {
         return true;
     }
-    if (new_tail.size() >= last_tail.size() &&
-        new_tail.compare(0, last_tail.size(), last_tail) == 0 &&
-        new_tail.size() > last_tail.size() + last_tail.size() / 2) {
+    if (prepared.size() >= last_tail.size() &&
+        prepared.compare(0, last_tail.size(), last_tail) == 0 &&
+        prepared.size() > last_tail.size() + last_tail.size() / 2) {
         return true;
     }
     return false;

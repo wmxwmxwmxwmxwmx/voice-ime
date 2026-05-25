@@ -5,6 +5,7 @@
 
 #include <whisper.h>
 
+#include <algorithm>
 #include <cctype>
 #include <memory>
 #include <sstream>
@@ -156,7 +157,8 @@ TranscribeResult AsrEngine::transcribe(const std::vector<float>& pcm,
     wparams.n_threads        = 1;
     wparams.suppress_blank   = true;
     wparams.suppress_nst     = true;
-    wparams.no_speech_thold  = no_speech_thold_;
+    wparams.no_speech_thold  = for_final ? std::min(no_speech_thold_, 0.45f)
+                                        : no_speech_thold_;
     wparams.temperature      = 0.0f;
     wparams.entropy_thold    = 2.4f;
     wparams.logprob_thold    = -1.0f;
@@ -206,8 +208,9 @@ TranscribeResult AsrEngine::transcribe(const std::vector<float>& pcm,
     if (language == "zh") {
         const std::string before_opencc = text;
         text = to_simplified_chinese(text);
-        if (!is_acceptable_transcript(text)) {
-            text = is_acceptable_transcript(before_opencc) ? before_opencc : std::string{};
+        text = prepare_transcript_for_output(text, 0.15, "zh");
+        if (text.empty()) {
+            text = prepare_transcript_for_output(before_opencc, 0.15, "zh");
         }
     }
     result.text = std::move(text);

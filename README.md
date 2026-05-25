@@ -92,7 +92,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -Wno-dev
 | `--partial-max-sec` | partial 推理的最大尾部音频窗口，秒（默认 3） |
 | `--max-utterance-sec` | 连续说话多久自动 commit（默认与 partial-max-sec 相同） |
 | `--no-speech-thold` | Whisper 非语音阈值（默认 0.65） |
-| `--zh-prompt` | 无已确认上下文时使用固定中文 `initial_prompt` |
+| `--no-zh-prompt` | 禁用默认中文 `initial_prompt`（默认已开启，利于 `language=zh` 识别） |
 | `--no-context-prompt` | 禁用已确认文本作为 `initial_prompt` |
 | `--no-repeat-filter` | 关闭 partial 重复幻觉过滤 |
 | `--garbled-ratio-thold` | 乱码码点占比上限，超过则拒发 partial（默认 0.15） |
@@ -147,7 +147,7 @@ voice-ime/
 ## 简体中文输出
 
 - 语言为 **中文**（`zh`）或 **自动**（`auto`）时，识别结果经 **OpenCC**（`t2s`）转为**简体中文**后再返回；**英语**（`en`）不转换。
-- 默认**不再**向 Whisper 注入长句 `initial_prompt`（语言由 `language=zh` 固定，简体由 OpenCC 保证），减少「以下是普通话简体中文」等幻觉残片；后处理会剔除相关子串。若需旧行为可启动服务时加 `--zh-prompt`。
+- 默认在 `language=zh` 且无上下文时注入简短中文 `initial_prompt`，提高普通话识别率；后处理会剔除 prompt 残片。若需关闭可加 `--no-zh-prompt`。
 - 若 `voice_server` 旁缺少 `opencc/t2s.json` 及 `.ocd2` 字典，服务仍可运行，但不会在日志外提示的情况下跳过繁简转换（stderr 会打印一次 `[opencc]` 警告）。
 - 识别准确率主要取决于 Whisper 模型大小；**中文推荐 `ggml-small.bin` 或更大**（`base` 在流式场景易重复幻觉），并在界面选择 **中文**。
 - 若出现 `󦱉󩦙` 类乱码：多为 Whisper 幻觉 + 脏文本进入上下文；服务端会过滤 PUA/非法 UTF-8，且不再用乱码作 `initial_prompt`。**`auto` 模式不再走 OpenCC**，仅 `zh` 转简体。

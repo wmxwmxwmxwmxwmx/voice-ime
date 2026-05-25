@@ -24,6 +24,8 @@ let pcmBuffer = [];
 let finalText = "";
 let partialText = "";
 let recording = false;
+let stopping = false;
+let stopFlushDone = null;
 let useWorklet = false;
 
 function denoiseEnabled() {
@@ -91,9 +93,14 @@ async function setupWorkletChain(stream) {
   });
 
   pcmCaptureNode.port.onmessage = (event) => {
-    if (!recording) return;
     const msg = event.data;
-    if (msg && msg.type === "pcm" && socket && socket.readyState === WebSocket.OPEN) {
+    if (!msg) return;
+    if (msg.type === "flushed") {
+      if (stopFlushDone) stopFlushDone();
+      return;
+    }
+    if (!recording && !stopping) return;
+    if (msg.type === "pcm" && socket && socket.readyState === WebSocket.OPEN) {
       socket.send(msg.buffer);
     }
   };
@@ -119,7 +126,7 @@ function setupScriptProcessorFallback(stream) {
 
   scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
   scriptProcessor.onaudioprocess = (e) => {
-    if (!recording) return;
+    if (!recording && !stopping) return;
     const input = e.inputBuffer.getChannelData(0);
     for (let i = 0; i < input.length; i++) {
       pcmBuffer.push(input[i]);
@@ -311,13 +318,31 @@ async function startRecording() {
   }
 }
 
-function stopRecording() {
-  recording = false;
+function waitWorkletFlush(timeoutMs = 300) {
+  if (!pcmCaptureNode) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    stopFlushDone = () => {
+      clearTimeout(timer);
+      stopFlushDone = null;
+      resolve();
+    };
+    pcmCaptureNode.port.postMessage({ flush: true });
+  });
+}
+
+async function stopRecording() {
   setRecStatus(false);
   startBtn.disabled = false;
   stopBtn.disabled = true;
 
-  if (!useWorklet && pcmBuffer.length > 0) {
+  stopping = true;
+
+  if (useWorklet) {
+    await waitWorkletFlush();
+  } else if (pcmBuffer.length > 0) {
     flushPcmChunk();
   }
 
@@ -325,6 +350,8 @@ function stopRecording() {
     socket.send(JSON.stringify({ cmd: "stop" }));
   }
 
+  stopping = false;
+  recording = false;
   teardownAudioNodes();
 
   if (mediaStream) {

@@ -19,12 +19,12 @@ void print_usage() {
         << "  --threads <数量>         ASR 工作线程数（默认：4）\n"
         << "  --step <毫秒>            两次中间识别的最小间隔（默认：400）\n"
         << "  --min-speech-ms <毫秒>   尾部至少多长才触发 partial（默认：500）\n"
-        << "  --vad-energy <阈值>      能量 VAD RMS 阈值（默认：0.015）\n"
+        << "  --vad-energy <阈值>      能量 VAD RMS 阈值（默认：0.008）\n"
         << "  --silence-commit-ms <毫秒> 停顿多久锁定已确认段落（默认：400）\n"
         << "  --partial-max-sec <秒>   partial 最大尾部窗口（默认：3）\n"
         << "  --max-utterance-sec <秒> 连续说话多久自动 commit（默认=partial-max-sec）\n"
-        << "  --no-speech-thold <值>   Whisper 非语音阈值（默认：0.65）\n"
-        << "  --zh-prompt              无上下文时使用固定中文 initial_prompt\n"
+        << "  --no-speech-thold <值>   Whisper 非语音阈值（默认：0.5，越小越不易判静音）\n"
+        << "  --no-zh-prompt           禁用默认中文 initial_prompt\n"
         << "  --no-context-prompt      禁用已确认文本作 initial_prompt\n"
         << "  --no-repeat-filter       关闭 partial 重复幻觉过滤\n"
         << "  --garbled-ratio-thold <值> 乱码码点占比上限（默认：0.15）\n";
@@ -36,10 +36,10 @@ struct Options {
     std::size_t threads = 4;
     int step_ms = 400;
     int min_speech_ms = 500;
-    float vad_energy = 0.015f;
+    float vad_energy = 0.008f;
     int silence_commit_ms = 400;
-    float no_speech_thold = 0.65f;
-    bool use_zh_prompt = false;
+    float no_speech_thold = 0.5f;
+    bool use_zh_prompt = true;
     int partial_max_sec = 3;
     int max_utterance_sec = 0;
     bool use_context_prompt = true;
@@ -96,8 +96,8 @@ bool parse_args(int argc, char** argv, Options& opts) {
             const auto v = need_value("--max-utterance-sec");
             if (v.empty()) return false;
             opts.max_utterance_sec = std::stoi(v);
-        } else if (arg == "--zh-prompt") {
-            opts.use_zh_prompt = true;
+        } else if (arg == "--no-zh-prompt") {
+            opts.use_zh_prompt = false;
         } else if (arg == "--no-context-prompt") {
             opts.use_context_prompt = false;
         } else if (arg == "--no-repeat-filter") {

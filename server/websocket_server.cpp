@@ -3,7 +3,9 @@
 #include "protocol.hpp"
 #include "text_quality.hpp"
 
+#include <chrono>
 #include <iostream>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -27,15 +29,17 @@ std::string build_context_prompt(const Session& session, bool use_context,
         return {};
     }
     if (!session.committed_text.empty()) {
-        const std::string cleaned = clean_transcript_text(session.committed_text);
-        if (is_acceptable_transcript(cleaned, garbled_thresh)) {
-            return truncate_utf8_tail(cleaned, 120);
+        const std::string prepared = prepare_transcript_for_output(
+            session.committed_text, garbled_thresh, session.language);
+        if (!prepared.empty()) {
+            return truncate_utf8_tail(prepared, 120);
         }
     }
     if (!session.last_partial_text.empty()) {
-        const std::string cleaned = clean_transcript_text(session.last_partial_text);
-        if (is_acceptable_transcript(cleaned, garbled_thresh)) {
-            return truncate_utf8_tail(cleaned, 80);
+        const std::string prepared = prepare_transcript_for_output(
+            session.last_partial_text, garbled_thresh, session.language);
+        if (!prepared.empty()) {
+            return truncate_utf8_tail(prepared, 80);
         }
     }
     return {};
@@ -147,13 +151,15 @@ void VoiceWebSocketServer::handle_control(ConnectionHdl hdl, const std::string& 
     }
 
     if (cmd == "stop") {
+        std::size_t pcm_samples = 0;
         {
             std::lock_guard<std::mutex> lock(session.mutex);
+            pcm_samples = session.pcm.size();
+            session.finalize_pending.store(true);
             session.recording = false;
         }
-        session.finalize_pending.store(true);
+        std::cout << "[ws] 停止录音 pcm=" << pcm_samples << " 样本\n";
         schedule_infer(hdl, true, false);
-        std::cout << "[ws] 停止录音\n";
         return;
     }
 
@@ -172,22 +178,24 @@ void VoiceWebSocketServer::handle_binary(ConnectionHdl hdl, const std::string& p
 
     {
         std::lock_guard<std::mutex> lock(session.mutex);
-        if (!session.recording) {
+        if (!session.recording && !session.finalize_pending.load()) {
             return;
         }
         const auto* samples = reinterpret_cast<const int16_t*>(payload.data());
         const std::size_t count = payload.size() / sizeof(int16_t);
         session.append_pcm_int16(samples, count, vad_energy_, kChunkMs);
 
-        const int max_utterance_ms = max_utterance_sec_ * 1000;
-        if (session.should_commit_on_pause(silence_commit_ms_)) {
-            pause_commit = true;
-            should_run = true;
-        } else if (session.should_commit_on_duration(max_utterance_ms)) {
-            pause_commit = true;
-            should_run = true;
-        } else if (session.should_schedule_infer(step_ms_, min_speech_ms_)) {
-            should_run = true;
+        if (!session.finalize_pending.load()) {
+            const int max_utterance_ms = max_utterance_sec_ * 1000;
+            if (session.should_commit_on_pause(silence_commit_ms_)) {
+                pause_commit = true;
+                should_run = true;
+            } else if (session.should_commit_on_duration(max_utterance_ms)) {
+                pause_commit = true;
+                should_run = true;
+            } else if (session.should_schedule_infer(step_ms_, min_speech_ms_)) {
+                should_run = true;
+            }
         }
     }
 
@@ -230,6 +238,10 @@ void VoiceWebSocketServer::schedule_infer(ConnectionHdl hdl, bool final_pass,
                 return;
             }
 
+            if (final_pass) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+
             std::vector<float> pcm_copy;
             std::string language;
             std::string context_storage;
@@ -243,10 +255,17 @@ void VoiceWebSocketServer::schedule_infer(ConnectionHdl hdl, bool final_pass,
                     return;
                 }
                 if (final_pass) {
-                    pcm_copy = session_ptr->pcm_all();
+                    pcm_copy = session_ptr->pcm_for_final_infer(vad_energy_,
+                                                                kChunkMs);
                 } else {
-                    pcm_copy =
+                    const std::vector<float> tail =
                         session_ptr->pcm_for_partial_infer(partial_max_ms);
+                    pcm_copy = Session::extract_speech_pcm(tail, vad_energy_,
+                                                           kChunkMs);
+                    if (pcm_copy.size() <
+                        static_cast<std::size_t>(Session::kSampleRate) / 5) {
+                        pcm_copy = tail;
+                    }
                 }
                 language = session_ptr->language;
                 last_partial_snapshot = session_ptr->last_partial_text;
@@ -266,8 +285,25 @@ void VoiceWebSocketServer::schedule_infer(ConnectionHdl hdl, bool final_pass,
                 (use_context_prompt_ && !context_storage.empty()) ? &context_storage
                                                                   : nullptr;
 
+            if (final_pass) {
+                const auto pcm_ms = pcm_copy.empty()
+                                        ? 0
+                                        : static_cast<int>(pcm_copy.size() * 1000 /
+                                                           Session::kSampleRate);
+                std::size_t raw_samples = 0;
+                {
+                    std::lock_guard<std::mutex> lock(session_ptr->mutex);
+                    raw_samples = session_ptr->pcm.size();
+                }
+                const int raw_ms =
+                    static_cast<int>(raw_samples * 1000 / Session::kSampleRate);
+                std::cout << "[ws] final 推理 pcm=" << pcm_ms << " ms（原始缓冲 "
+                          << raw_ms << " ms）\n";
+            }
+
             if (pcm_copy.empty()) {
                 if (final_pass && !session_ptr->closed.load()) {
+                    std::cerr << "[ws] final 无有效音频（未收到 PCM 或录音过短）\n";
                     session_ptr->finalize_pending.store(false);
                     send_text(hdl_copy, protocol::make_final(""));
                 }
@@ -291,10 +327,27 @@ void VoiceWebSocketServer::schedule_infer(ConnectionHdl hdl, bool final_pass,
                 if (repeat_filter_ && is_repetitive_hallucination(tr.text)) {
                     std::cerr << "[ws] final 识别结果疑似重复幻觉\n";
                 }
-                std::string final_text = tr.text;
-                if (!is_acceptable_transcript(final_text, garbled_ratio_thold_)) {
-                    std::cerr << "[ws] final 乱码已丢弃\n";
-                    final_text.clear();
+                std::string final_text = prepare_transcript_for_output(
+                    tr.text, garbled_ratio_thold_, language);
+                if (final_text.empty() && language == "zh" && !tr.text.empty()) {
+                    final_text = clean_transcript_text(tr.text);
+                    if (!final_text.empty()) {
+                        std::cerr << "[ws] zh final 无汉字，已回退展示原始识别"
+                                     "（建议换 models/ggml-small.bin）\n";
+                    }
+                }
+                if (final_text.empty()) {
+                    if (tr.text.empty()) {
+                        std::cerr << "[ws] final 无识别文本（建议换 ggml-small.bin，"
+                                     "或检查麦克风/是否主要为静音）\n";
+                    } else if (language == "zh") {
+                        const std::string preview =
+                            tr.text.size() > 40 ? tr.text.substr(0, 40) + "..."
+                                                  : tr.text;
+                        std::cerr << "[ws] zh 已过滤英文幻觉: " << preview << "\n";
+                    } else {
+                        std::cerr << "[ws] final 规范化后为空\n";
+                    }
                 }
                 session_ptr->finalize_pending.store(false);
                 send_text(hdl_copy, protocol::make_final(final_text));
@@ -305,12 +358,14 @@ void VoiceWebSocketServer::schedule_infer(ConnectionHdl hdl, bool final_pass,
                 return;
             }
 
-            if (!is_acceptable_transcript(tr.text, garbled_ratio_thold_)) {
+            const std::string prepared = prepare_transcript_for_output(
+                tr.text, garbled_ratio_thold_, language);
+            if (prepared.empty()) {
                 return;
             }
 
             const std::string stable_tail = Session::stable_tail_for_display(
-                tr.text, last_partial_snapshot, garbled_ratio_thold_);
+                prepared, last_partial_snapshot, garbled_ratio_thold_, language);
             if (stable_tail.empty()) {
                 return;
             }
