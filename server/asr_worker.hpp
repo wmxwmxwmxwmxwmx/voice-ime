@@ -16,7 +16,9 @@ public:
 
     bool model_available() const;
     TranscribeResult transcribe(const std::vector<float>& pcm,
-                                const std::string& language) const;
+                                const std::string& language,
+                                const std::string* context_prompt = nullptr,
+                                bool short_audio = false) const;
     static std::string postprocess(const std::string& text);
     static std::string sanitize_transcript(const std::string& text);
 

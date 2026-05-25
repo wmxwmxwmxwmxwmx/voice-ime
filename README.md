@@ -88,9 +88,12 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -Wno-dev
 | `--step` | 两次中间识别的最小间隔，毫秒（默认 400） |
 | `--min-speech-ms` | 未提交尾部至少多长才触发 partial，毫秒（默认 500） |
 | `--vad-energy` | 能量 VAD 的 RMS 阈值（默认 0.015） |
-| `--silence-commit-ms` | 静音多久将当前段落锁定为已确认，毫秒（默认 800） |
+| `--silence-commit-ms` | 静音多久将当前段落锁定为已确认，毫秒（默认 500） |
+| `--partial-max-sec` | partial 推理的最大尾部音频窗口，秒（默认 4） |
 | `--no-speech-thold` | Whisper 非语音阈值（默认 0.6） |
-| `--zh-prompt` | 为中文启用 Whisper `initial_prompt`（默认关闭，避免提示词泄漏） |
+| `--zh-prompt` | 无已确认上下文时使用固定中文 `initial_prompt` |
+| `--no-context-prompt` | 禁用已确认文本作为 `initial_prompt` |
+| `--no-repeat-filter` | 关闭 partial 重复幻觉过滤 |
 
 ### 5. 启动并打开前端
 
@@ -149,9 +152,13 @@ voice-ime/
 ## VAD 与增量识别
 
 - **能量 VAD**：低于 `--vad-energy` 的 PCM 块不写入缓冲，减少静音送入 Whisper 导致的幻觉（如 `(音)`）。
-- **增量识别**：仅对「未锁定尾部」音频推理；`partial` / `final` 下发 **已确认文本 + 当前尾部**，停顿约 `--silence-commit-ms`（默认 800ms）后锁定上一段，继续说只在后面增长。
-- **Whisper**：启用 `no_speech_thold`、`suppress_nst`；`sanitize_transcript` 剔除括号幻觉与历史 prompt 残片。
-- 推荐：`ggml-base.bin` 或更大、界面选 **中文**；麦克风较弱时可略降低 `--vad-energy`（如 `0.01`）。
+- **partial 尾部窗口**：仅对最近 `--partial-max-sec`（默认 4s）且自上次 commit 起的音频做中间识别，避免长尾部重复幻觉。
+- **增量显示**：`partial` 下发 **已确认文本 + 当前句尾部**；停顿约 `--silence-commit-ms`（默认 500ms）后 commit 锁定上一段。
+- **stop 整段 final**：停止录音时对**整段缓冲**重识别一次，`final` 全文替换（与中途 partial 可不同，通常更通顺）。
+- **上下文 prompt**：默认将已确认文本尾部（约 120 字）作为 `initial_prompt` 提高连贯性；经 `sanitize_transcript` 防泄漏。可用 `--no-context-prompt` 关闭。
+- **重复过滤**：partial 若检测到连续重复 n-gram（≥4 字 ×3 次）则丢弃该次结果；`--no-repeat-filter` 可关闭。
+- **Whisper**：`no_speech_thold`、`suppress_nst`；partial 短窗口启用 `single_segment`。
+- 推荐：`ggml-small.bin` 或更大、界面选 **中文**；可试 `--partial-max-sec 3 --step 500`；麦克风较弱时可略降低 `--vad-energy`（如 `0.01`）。
 
 ## 性能说明
 

@@ -51,6 +51,7 @@ add_executable(voice_server
     server/audio_vad.cpp
     server/asr_worker.cpp
     server/text_convert.cpp
+    server/text_quality.cpp
     server/websocket_server.cpp
 )
 

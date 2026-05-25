@@ -20,9 +20,12 @@ void print_usage() {
         << "  --step <毫秒>            两次中间识别的最小间隔（默认：400）\n"
         << "  --min-speech-ms <毫秒>   尾部至少多长才触发 partial（默认：500）\n"
         << "  --vad-energy <阈值>      能量 VAD RMS 阈值（默认：0.015）\n"
-        << "  --silence-commit-ms <毫秒> 停顿多久锁定已确认段落（默认：800）\n"
+        << "  --silence-commit-ms <毫秒> 停顿多久锁定已确认段落（默认：500）\n"
+        << "  --partial-max-sec <秒>   partial 最大尾部窗口（默认：4）\n"
         << "  --no-speech-thold <值>   Whisper 非语音阈值（默认：0.6）\n"
-        << "  --zh-prompt              为中文启用 Whisper initial_prompt（默认关闭）\n";
+        << "  --zh-prompt              无上下文时使用固定中文 initial_prompt\n"
+        << "  --no-context-prompt      禁用已确认文本作 initial_prompt\n"
+        << "  --no-repeat-filter       关闭 partial 重复幻觉过滤\n";
 }
 
 struct Options {
@@ -32,9 +35,12 @@ struct Options {
     int step_ms = 400;
     int min_speech_ms = 500;
     float vad_energy = 0.015f;
-    int silence_commit_ms = 800;
+    int silence_commit_ms = 500;
     float no_speech_thold = 0.6f;
     bool use_zh_prompt = false;
+    int partial_max_sec = 4;
+    bool use_context_prompt = true;
+    bool repeat_filter = true;
 };
 
 bool parse_args(int argc, char** argv, Options& opts) {
@@ -78,8 +84,16 @@ bool parse_args(int argc, char** argv, Options& opts) {
             const auto v = need_value("--no-speech-thold");
             if (v.empty()) return false;
             opts.no_speech_thold = std::stof(v);
+        } else if (arg == "--partial-max-sec") {
+            const auto v = need_value("--partial-max-sec");
+            if (v.empty()) return false;
+            opts.partial_max_sec = std::stoi(v);
         } else if (arg == "--zh-prompt") {
             opts.use_zh_prompt = true;
+        } else if (arg == "--no-context-prompt") {
+            opts.use_context_prompt = false;
+        } else if (arg == "--no-repeat-filter") {
+            opts.repeat_filter = false;
         } else if (arg == "--help" || arg == "-h") {
             print_usage();
             std::exit(0);
@@ -116,7 +130,8 @@ int main(int argc, char** argv) {
         VoiceWebSocketServer server(opts.model, opts.port, opts.threads, opts.step_ms,
                                     opts.min_speech_ms, opts.vad_energy,
                                     opts.silence_commit_ms, opts.no_speech_thold,
-                                    opts.use_zh_prompt);
+                                    opts.use_zh_prompt, opts.partial_max_sec,
+                                    opts.use_context_prompt, opts.repeat_filter);
         if (!server.validate_model()) {
             return 1;
         }

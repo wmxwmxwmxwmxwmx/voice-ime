@@ -1,6 +1,7 @@
 #include "asr_worker.hpp"
 
 #include "text_convert.hpp"
+#include "text_quality.hpp"
 
 #include <whisper.h>
 
@@ -125,7 +126,9 @@ std::string AsrEngine::sanitize_transcript(const std::string& text) {
 }
 
 TranscribeResult AsrEngine::transcribe(const std::vector<float>& pcm,
-                                       const std::string& language) const {
+                                       const std::string& language,
+                                       const std::string* context_prompt,
+                                       bool short_audio) const {
     TranscribeResult result;
     if (pcm.empty()) {
         result.ok = true;
@@ -150,6 +153,26 @@ TranscribeResult AsrEngine::transcribe(const std::vector<float>& pcm,
     wparams.suppress_blank   = true;
     wparams.suppress_nst     = true;
     wparams.no_speech_thold  = no_speech_thold_;
+    if (short_audio) {
+        wparams.single_segment = true;
+    }
+
+    std::string context_storage;
+    const char* prompt_ptr = nullptr;
+    if (context_prompt && !context_prompt->empty() &&
+        (language == "zh" || language == "auto")) {
+        context_storage = truncate_utf8_tail(*context_prompt, 120);
+        if (!context_storage.empty()) {
+            prompt_ptr = context_storage.c_str();
+        }
+    }
+    if (!prompt_ptr && use_zh_prompt_ && language == "zh") {
+        prompt_ptr = kZhInitialPrompt;
+    }
+    if (prompt_ptr) {
+        wparams.initial_prompt = prompt_ptr;
+        wparams.carry_initial_prompt = false;
+    }
 
     if (language != "auto" && !language.empty()) {
         wparams.language = language.c_str();
@@ -157,11 +180,6 @@ TranscribeResult AsrEngine::transcribe(const std::vector<float>& pcm,
     } else {
         wparams.language = nullptr;
         wparams.detect_language = true;
-    }
-
-    if (use_zh_prompt_ && language == "zh") {
-        wparams.initial_prompt = kZhInitialPrompt;
-        wparams.carry_initial_prompt = false;
     }
 
     if (whisper_full(ctx, wparams, pcm.data(), static_cast<int>(pcm.size())) != 0) {

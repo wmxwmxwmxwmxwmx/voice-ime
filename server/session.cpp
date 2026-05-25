@@ -83,12 +83,21 @@ void Session::commit_segment(const std::string& tail_text) {
     trailing_silence_ms = 0;
 }
 
-std::vector<float> Session::pcm_for_infer() const {
+std::vector<float> Session::pcm_for_partial_infer(int max_tail_ms) const {
     if (pcm.size() <= infer_pcm_offset) {
         return {};
     }
-    return std::vector<float>(pcm.begin() + static_cast<std::ptrdiff_t>(infer_pcm_offset),
-                            pcm.end());
+    const std::size_t cap_samples =
+        static_cast<std::size_t>(kSampleRate) * static_cast<std::size_t>(max_tail_ms) / 1000;
+    const std::size_t tail_start =
+        pcm.size() > cap_samples ? pcm.size() - cap_samples : 0;
+    const std::size_t start =
+        tail_start > infer_pcm_offset ? tail_start : infer_pcm_offset;
+    return std::vector<float>(pcm.begin() + static_cast<std::ptrdiff_t>(start), pcm.end());
+}
+
+std::vector<float> Session::pcm_all() const {
+    return pcm;
 }
 
 std::string Session::display_text(const std::string& tail) const {

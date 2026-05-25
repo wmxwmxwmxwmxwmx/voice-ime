@@ -34,7 +34,8 @@ struct Session {
     void mark_inferred();
     bool should_commit_on_pause(int silence_commit_ms) const;
     void commit_segment(const std::string& tail_text);
-    std::vector<float> pcm_for_infer() const;
+    std::vector<float> pcm_for_partial_infer(int max_tail_ms) const;
+    std::vector<float> pcm_all() const;
     std::string display_text(const std::string& tail) const;
     bool has_pending_tail() const;
 };
