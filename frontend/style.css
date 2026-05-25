@@ -27,25 +27,33 @@ body {
 .container {
   max-width: 720px;
   margin: 0 auto;
-  padding: 2rem 1.25rem 3rem;
+  padding: 1.5rem 1.25rem 2rem;
 }
 
 header h1 {
-  margin: 0 0 0.25rem;
+  margin: 0;
   font-size: 1.75rem;
   font-weight: 600;
 }
 
-.subtitle {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.95rem;
+.error-banner {
+  margin: 0.75rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+}
+
+.error-banner[hidden] {
+  display: none;
 }
 
 .status-bar {
   display: flex;
   gap: 0.5rem;
-  margin: 1.5rem 0 1rem;
+  margin: 1rem 0 0.75rem;
 }
 
 .badge {
@@ -68,10 +76,11 @@ header h1 {
 .controls {
   display: flex;
   gap: 0.75rem;
-  margin-bottom: 1.25rem;
+  margin-bottom: 1rem;
 }
 
 button {
+  min-height: 44px;
   padding: 0.6rem 1.25rem;
   border: none;
   border-radius: 8px;
@@ -104,7 +113,7 @@ button:disabled {
 .config {
   display: grid;
   gap: 0.75rem;
-  margin-bottom: 1.5rem;
+  margin-bottom: 0.75rem;
 }
 
 .config label {
@@ -125,11 +134,60 @@ button:disabled {
   font-size: 0.95rem;
 }
 
-.transcript h2 {
-  margin: 0 0 0.5rem;
-  font-size: 1rem;
-  font-weight: 600;
+.advanced {
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
   color: var(--muted);
+}
+
+.advanced summary {
+  cursor: pointer;
+  user-select: none;
+  padding: 0.25rem 0;
+}
+
+.advanced summary:hover {
+  color: var(--text);
+}
+
+.advanced-body {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.advanced-body label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: var(--muted);
+}
+
+.advanced-body input[type="text"] {
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
+.checkbox-label {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.5rem !important;
+  cursor: pointer;
+}
+
+.checkbox-label input {
+  width: 1rem;
+  height: 1rem;
+}
+
+.transcript {
+  margin-top: 0.25rem;
 }
 
 .result-box {
@@ -143,23 +201,15 @@ button:disabled {
   word-break: break-word;
 }
 
+.result-empty {
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
 .result-final {
   color: var(--text);
 }
 
 .result-partial {
   color: var(--partial);
-}
-
-.hint {
-  margin-top: 1.5rem;
-  font-size: 0.8rem;
-  color: var(--muted);
-}
-
-.hint code {
-  background: var(--surface);
-  padding: 0.1rem 0.35rem;
-  border-radius: 4px;
-  font-size: 0.78rem;
 }

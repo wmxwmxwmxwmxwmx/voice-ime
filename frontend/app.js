@@ -8,6 +8,7 @@ const stopBtn = document.getElementById("stopBtn");
 const wsStatus = document.getElementById("wsStatus");
 const recStatus = document.getElementById("recStatus");
 const resultEl = document.getElementById("result");
+const errorBanner = document.getElementById("errorBanner");
 const serverUrlInput = document.getElementById("serverUrl");
 const languageSelect = document.getElementById("language");
 const denoiseCheckbox = document.getElementById("denoiseEnabled");
@@ -27,6 +28,24 @@ let recording = false;
 let stopping = false;
 let stopFlushDone = null;
 let useWorklet = false;
+let errorHideTimer = null;
+
+const EMPTY_HINT = "点击「开始」说话";
+
+function showError(message) {
+  if (!errorBanner || !message) {
+    return;
+  }
+  errorBanner.textContent = message;
+  errorBanner.hidden = false;
+  if (errorHideTimer) {
+    clearTimeout(errorHideTimer);
+  }
+  errorHideTimer = setTimeout(() => {
+    errorBanner.hidden = true;
+    errorHideTimer = null;
+  }, 3000);
+}
 
 function denoiseEnabled() {
   return denoiseCheckbox ? denoiseCheckbox.checked : true;
@@ -150,12 +169,12 @@ function setupScriptProcessorFallback(stream) {
 }
 
 function setWsStatus(online) {
-  wsStatus.textContent = online ? "已连接" : "未连接";
+  wsStatus.textContent = online ? "在线" : "离线";
   wsStatus.className = online ? "badge badge-online" : "badge badge-offline";
 }
 
 function setRecStatus(active) {
-  recStatus.textContent = active ? "录音中" : "空闲";
+  recStatus.textContent = active ? "录音" : "就绪";
   recStatus.className = active ? "badge badge-recording" : "badge badge-idle";
 }
 
@@ -172,6 +191,12 @@ function renderTranscript() {
     partialSpan.className = "result-partial";
     partialSpan.textContent = partialText;
     resultEl.appendChild(partialSpan);
+  }
+  if (!finalText && !partialText) {
+    const emptySpan = document.createElement("span");
+    emptySpan.className = "result-empty";
+    emptySpan.textContent = EMPTY_HINT;
+    resultEl.appendChild(emptySpan);
   }
 }
 
@@ -231,7 +256,7 @@ function connectWebSocket() {
           renderTranscript();
         } else if (msg.type === "error") {
           console.error(msg.message);
-          alert(msg.message);
+          showError(msg.message);
         }
       } catch (e) {
         console.warn("非 JSON 消息:", event.data);
@@ -313,7 +338,7 @@ async function startRecording() {
     setRecStatus(true);
   } catch (err) {
     console.error(err);
-    alert(err.message || "无法开始录音");
+    showError(err.message || "无法开始录音");
     stopRecording();
   }
 }
@@ -373,3 +398,5 @@ const params = new URLSearchParams(window.location.search);
 if (params.has("ws")) {
   serverUrlInput.value = params.get("ws");
 }
+
+renderTranscript();

@@ -10,12 +10,13 @@
   <main class="container">
     <header>
       <h1>Voice-IME</h1>
-      <p class="subtitle">实时流式语音输入</p>
     </header>
 
+    <div id="errorBanner" class="error-banner" hidden></div>
+
     <section class="status-bar">
-      <span id="wsStatus" class="badge badge-offline">未连接</span>
-      <span id="recStatus" class="badge badge-idle">空闲</span>
+      <span id="wsStatus" class="badge badge-offline">离线</span>
+      <span id="recStatus" class="badge badge-idle">就绪</span>
     </section>
 
     <section class="controls">
@@ -25,10 +26,6 @@
 
     <section class="config">
       <label>
-        服务器
-        <input id="serverUrl" type="text" value="ws://localhost:9000" />
-      </label>
-      <label>
         语言
         <select id="language">
           <option value="auto">自动</option>
@@ -36,23 +33,25 @@
           <option value="en">英语</option>
         </select>
       </label>
-      <label class="checkbox-label">
-        <input id="denoiseEnabled" type="checkbox" checked />
-        浏览器降噪（RNNoise）
-      </label>
     </section>
+
+    <details class="advanced">
+      <summary>高级</summary>
+      <div class="advanced-body">
+        <label>
+          地址
+          <input id="serverUrl" type="text" value="ws://localhost:9000" placeholder="ws://localhost:9000" />
+        </label>
+        <label class="checkbox-label" title="浏览器端 RNNoise 降噪">
+          <input id="denoiseEnabled" type="checkbox" checked />
+          降噪
+        </label>
+      </div>
+    </details>
 
     <section class="transcript">
-      <h2>识别结果</h2>
-      <div id="result" class="result-box" aria-live="polite"></div>
+      <div id="result" class="result-box" aria-label="识别结果" aria-live="polite"></div>
     </section>
-
-    <p class="hint">
-      请先用 <code>python -m http.server 8080 -d frontend</code> 启动页面，再打开
-      <code>http://localhost:8080</code>（须为 http/https 安全上下文，AudioWorklet 在
-      <code>file://</code> 下不可用）。首次克隆请执行
-      <code>.\scripts\vendor_rnnoise.ps1</code> 拉取 RNNoise 静态资源。
-    </p>
   </main>
   <script src="app.js"></script>
 </body>
